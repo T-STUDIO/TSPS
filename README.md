@@ -10,3 +10,7 @@ pipx ensurepath
 pipx install uvicorn
 
 pipx inject uvicorn fastapi python-multipart Pillow numpy astropy
+   
+https://tstudioastronomy.blog.fc2.com/blog-category-46.html
+
+（Japanese Only)
