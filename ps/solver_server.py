@@ -700,6 +700,7 @@ async def index():
                         <div><label>Downsample</label><input type="number" id="downsample" name="downsample" value="2"></div>
                         <div><label>SNR (Sigma)</label><input type="number" id="snr" name="snr" value="5"></div>
                         <div><label>Limit (sec)</label><input type="number" id="cpulimit" name="cpulimit" value="60"></div>
+                        <div style="display:flex; align-items:center; height:100%; padding-top:14px;"><label style="margin-bottom:0; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="use_sextractor" name="use_sextractor" style="width:auto; margin:0;"> Use SExtractor</label></div>
                     </div>
                     <div style="margin-top:12px;">
                         <label>Custom Options</label>
@@ -758,6 +759,7 @@ async def index():
                     cpulimit: parseInt(document.getElementById('cpulimit').value),
                     custom_args: document.getElementById('custom_args').value,
                     use_ai: document.getElementById('use_ai').checked,
+                    use_sextractor: document.getElementById('use_sextractor').checked,
                     ai_threshold: parseFloat(document.getElementById('ai_threshold').value),
                     ai_radius: parseFloat(document.getElementById('ai_radius').value)
                 };
@@ -775,7 +777,7 @@ async def index():
             async function loadSettings() {
                 let radius = 15, downsample = 2, snr = 5, cpulimit = 60;
                 let custom_args = "--scale-units degwidth --scale-low 1 --scale-high 30 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize";
-                let use_ai = true, ai_threshold = 20.0, ai_radius = 2.0;
+                let use_ai = true, use_sextractor = false, ai_threshold = 20.0, ai_radius = 2.0;
 
                 try {
                     const r = await fetch('/api/get_config');
@@ -786,6 +788,7 @@ async def index():
                     cpulimit = s.cpulimit ?? cpulimit;
                     custom_args = s.custom_args ?? custom_args;
                     use_ai = s.use_ai ?? use_ai;
+                    use_sextractor = s.use_sextractor ?? use_sextractor;
                     ai_threshold = s.ai_threshold ?? ai_threshold;
                     ai_radius = s.ai_radius ?? ai_radius;
                 } catch (e) {
@@ -799,6 +802,7 @@ async def index():
                         cpulimit = s.cpulimit ?? cpulimit;
                         custom_args = s.custom_args ?? custom_args;
                         use_ai = s.use_ai ?? use_ai;
+                        use_sextractor = s.use_sextractor ?? use_sextractor;
                         ai_threshold = s.ai_threshold ?? ai_threshold;
                         ai_radius = s.ai_radius ?? ai_radius;
                     }
@@ -810,6 +814,7 @@ async def index():
                 document.getElementById('cpulimit').value = cpulimit;
                 document.getElementById('custom_args').value = custom_args;
                 document.getElementById('use_ai').checked = use_ai;
+                document.getElementById('use_sextractor').checked = use_sextractor;
                 document.getElementById('ai_threshold').value = ai_threshold;
                 document.getElementById('ai_radius').value = ai_radius;
             }
@@ -820,6 +825,7 @@ async def index():
                 try {
                     const formData = new FormData(document.getElementById('solveForm'));
                     formData.set("use_ai", document.getElementById('use_ai').checked ? "true" : "false");
+                    formData.set("use_sextractor", document.getElementById('use_sextractor').checked ? "true" : "false");
                     const resp = await fetch("/solve", { method: 'POST', body: formData });
                     const res = await resp.json();
                     if(res.status === 'success') {
@@ -946,8 +952,9 @@ DEFAULT_CONFIG = {
     "downsample": 2,
     "snr": 5,
     "cpulimit": 60,
-    "custom_args": "--scale-units degwidth --scale-low 1 --scale-high 30 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize",
+    "custom_args": "--scale-units degwidth --scale-low 1 --scale-high 30 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize 10",
     "use_ai": True,
+    "use_sextractor": False,
     "ai_threshold": 20.0,
     "ai_radius": 2.0,
     "ai_min_confidence": 0.3
@@ -1000,6 +1007,7 @@ async def solve_api(
     cpulimit: Optional[int] = Form(None),
     custom_args: Optional[str] = Form(None),
     use_ai: Optional[bool] = Form(None),
+    use_sextractor: Optional[bool] = Form(None),
     ai_threshold: Optional[float] = Form(None),
     ai_radius: Optional[float] = Form(None),
     ai_min_confidence: Optional[float] = Form(None),
@@ -1032,6 +1040,7 @@ async def solve_api(
     actual_cpulimit = cpulimit if cpulimit is not None else cfg["cpulimit"]
     actual_custom_args = custom_args if custom_args is not None else cfg["custom_args"]
     actual_use_ai = use_ai if use_ai is not None else cfg["use_ai"]
+    actual_use_sextractor = use_sextractor if use_sextractor is not None else cfg.get("use_sextractor", False)
     actual_ai_threshold = ai_threshold if ai_threshold is not None else cfg["ai_threshold"]
     actual_ai_radius = ai_radius if ai_radius is not None else cfg["ai_radius"]
     actual_ai_min_confidence = ai_min_confidence if ai_min_confidence is not None else cfg["ai_min_confidence"]
@@ -1108,10 +1117,22 @@ async def solve_api(
             "--downsample", str(actual_downsample),
             "--sigma", str(actual_snr) 
         ]
+        if actual_use_sextractor:
+            cmd.append("--use-sextractor")
         if p_ra is not None and p_dec is not None:
             cmd.extend(["--ra", str(p_ra), "--dec", str(p_dec), "--radius", str(p_radius)])
         if actual_custom_args:
-            cmd.extend(actual_custom_args.replace("--snr", "--sigma").split())
+            raw_args = actual_custom_args.replace("--snr", "--sigma").split()
+            fixed_args = []
+            i = 0
+            while i < len(raw_args):
+                arg = raw_args[i]
+                fixed_args.append(arg)
+                if arg == "--uniformize":
+                    if i + 1 >= len(raw_args) or raw_args[i+1].startswith("-"):
+                        fixed_args.append("10")
+                i += 1
+            cmd.extend(fixed_args)
         
         cmd_str = ' '.join(cmd)
         log_i(f"Executing Plate Solving command: {cmd_str}")
