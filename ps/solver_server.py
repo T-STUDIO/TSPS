@@ -9,7 +9,7 @@ import json
 import urllib.request
 import time
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from PIL import Image
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
