@@ -656,7 +656,7 @@ async def index():
             }
             .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
             label { display: block; font-size: 0.7rem; color: var(--text-dim); margin-bottom: 4px; }
-            input { 
+            input, select { 
                 width: 100%; padding: 10px; background: var(--input-bg); border: 1px solid var(--border); 
                 color: white; border-radius: 4px; box-sizing: border-box; font-size: 0.9rem;
             }
@@ -697,6 +697,7 @@ async def index():
                 <div class="section-title">Settings</div>
                 <div class="section">
                     <div class="grid">
+                        <div><label>Solver Type</label><select id="solver_type" name="solver_type"><option value="astrometry">Astrometry.net</option><option value="astap">ASTAP</option></select></div>
                         <div><label>Downsample</label><input type="number" id="downsample" name="downsample" value="2"></div>
                         <div><label>SNR (Sigma)</label><input type="number" id="snr" name="snr" value="5"></div>
                         <div><label>Limit (sec)</label><input type="number" id="cpulimit" name="cpulimit" value="60"></div>
@@ -753,6 +754,7 @@ async def index():
             }
             async function saveSettings() {
                 const cfg = {
+                    solver_type: document.getElementById('solver_type').value,
                     radius: parseFloat(document.getElementById('radius').value),
                     downsample: parseInt(document.getElementById('downsample').value),
                     snr: parseInt(document.getElementById('snr').value),
@@ -775,13 +777,14 @@ async def index():
                 }
             }
             async function loadSettings() {
-                let radius = 15, downsample = 2, snr = 5, cpulimit = 60;
+                let solver_type = 'astrometry', radius = 15, downsample = 2, snr = 5, cpulimit = 60;
                 let custom_args = "--scale-units degwidth --scale-low 1 --scale-high 30 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize";
                 let use_ai = true, use_sextractor = false, ai_threshold = 20.0, ai_radius = 2.0;
 
                 try {
                     const r = await fetch('/api/get_config');
                     const s = await r.json();
+                    solver_type = s.solver_type ?? solver_type;
                     radius = s.radius ?? radius;
                     downsample = s.downsample ?? downsample;
                     snr = s.snr ?? snr;
@@ -796,6 +799,7 @@ async def index():
                     const saved = localStorage.getItem('ts_solver_v3');
                     if (saved) {
                         const s = JSON.parse(saved);
+                        solver_type = s.solver_type ?? solver_type;
                         radius = s.radius ?? radius;
                         downsample = s.downsample ?? downsample;
                         snr = s.snr ?? snr;
@@ -808,6 +812,7 @@ async def index():
                     }
                 }
 
+                document.getElementById('solver_type').value = solver_type;
                 document.getElementById('radius').value = radius;
                 document.getElementById('downsample').value = downsample;
                 document.getElementById('snr').value = snr;
@@ -824,6 +829,7 @@ async def index():
                 out.innerText = "Analyzing...";
                 try {
                     const formData = new FormData(document.getElementById('solveForm'));
+                    formData.set("solver_type", document.getElementById('solver_type').value);
                     formData.set("use_ai", document.getElementById('use_ai').checked ? "true" : "false");
                     formData.set("use_sextractor", document.getElementById('use_sextractor').checked ? "true" : "false");
                     const resp = await fetch("/solve", { method: 'POST', body: formData });
@@ -948,6 +954,7 @@ async def resolve_name(name: str):
     return {"status": "failed", "message": "Target not found"}
 
 DEFAULT_CONFIG = {
+    "solver_type": "astrometry",
     "radius": 15.0,
     "downsample": 2,
     "snr": 5,
@@ -1011,7 +1018,8 @@ async def solve_api(
     ai_threshold: Optional[float] = Form(None),
     ai_radius: Optional[float] = Form(None),
     ai_min_confidence: Optional[float] = Form(None),
-    catalog: Optional[str] = Form(None)
+    catalog: Optional[str] = Form(None),
+    solver_type: Optional[str] = Form(None)
 ):
     sid = str(uuid.uuid4())
     img_path = os.path.join(WORK_DIR, f"{sid}.jpg")
@@ -1027,11 +1035,12 @@ async def solve_api(
     def log_w(msg):
         logger.warning(msg)
         logs.append(f"[WARN] {msg}")
-
+ 
     # Load persistent solver configuration
     cfg = load_solver_config()
-
+ 
     # Determine parameter priorities: Explicit Request > Persistent Server Settings > Historical hardcoded defaults
+    actual_solver_type = solver_type if solver_type is not None else cfg.get("solver_type", "astrometry")
     actual_ra = ra
     actual_dec = dec
     actual_radius = radius if radius is not None else cfg["radius"]
@@ -1110,7 +1119,7 @@ async def solve_api(
         log_i("AI solver disabled by user.")
 
     # solve-field実行用の共通関数
-    def execute_solve(p_ra, p_dec, p_radius):
+    def execute_solve_astrometry(p_ra, p_dec, p_radius):
         cmd = [
             "solve-field", img_path, "--overwrite", "--no-plots", 
             "--cpulimit", str(actual_cpulimit), 
@@ -1177,20 +1186,91 @@ async def solve_api(
         wcs_res = parse_wcs_and_annotate(img_path.replace(".jpg", ".wcs"), float(actual_w), float(actual_h), custom_db=custom_db)
         return wcs_res, p
 
-    # 1回目の試行 (AIに基づくパラメータ等で実行)
-    res, proc = execute_solve(actual_ra, actual_dec, actual_radius)
+    # ASTAP実行用の共通関数 (新規追加)
+    def execute_solve_astap(p_ra, p_dec, p_radius):
+        cmd = ["astap", "-f", img_path]
+        if p_ra is not None and p_dec is not None:
+            # ASTAPでは-raは時（hours）で渡すのが最も誤認が少なく安全です
+            ra_hours = p_ra / 15.0
+            cmd.extend(["-ra", str(ra_hours), "-dec", str(p_dec)])
+            if p_radius is not None:
+                cmd.extend(["-r", str(p_radius)])
+        
+        # ダウンサンプリング (ASTAPでは -z がbinningに対応、0=auto)
+        if actual_downsample is not None:
+            cmd.extend(["-z", str(actual_downsample)])
+        else:
+            cmd.extend(["-z", "0"])
+            
+        cmd_str = ' '.join(cmd)
+        log_i(f"Executing ASTAP Plate Solving command: {cmd_str}")
+        t0 = time.time()
+        p_raw = subprocess.run(cmd, cwd=WORK_DIR, capture_output=True)
+        elapsed = time.time() - t0
+        
+        stdout_str = p_raw.stdout.decode('utf-8', errors='ignore') if p_raw.stdout else ""
+        stderr_str = p_raw.stderr.decode('utf-8', errors='ignore') if p_raw.stderr else ""
+        
+        p = subprocess.CompletedProcess(
+            args=p_raw.args,
+            returncode=p_raw.returncode,
+            stdout=stdout_str,
+            stderr=stderr_str
+        )
+        
+        log_i(f"ASTAP completed in {elapsed:.2f}s (Exit code: {p.returncode})")
+        
+        if p.stdout:
+            logger.info("=== ASTAP STDOUT (Full Text for Server Log) ===")
+            for line in p.stdout.splitlines():
+                logger.info(line)
+        if p.stderr:
+            logger.warning("=== ASTAP STDERR (Full Text for Server Log) ===")
+            for line in p.stderr.splitlines():
+                logger.warning(line)
+
+        if p.stdout:
+            out_lines = p.stdout.strip().splitlines()[-5:]
+            log_i("ASTAP stdout (last 5 lines):")
+            for line in out_lines:
+                log_i("  " + line)
+        if p.stderr:
+            err_lines = p.stderr.strip().splitlines()[-5:]
+            log_i("ASTAP stderr (last 5 lines):")
+            for line in err_lines:
+                log_i("  " + line)
+                
+        wcs_res = parse_wcs_and_annotate(img_path.replace(".jpg", ".wcs"), float(actual_w), float(actual_h), custom_db=custom_db)
+        return wcs_res, p
+
+    # 選択されたソルバータイプに基づいて解決
+    if actual_solver_type == "astap":
+        res, proc = execute_solve_astap(actual_ra, actual_dec, actual_radius)
+        
+        # 解決に失敗し、かつAIがONだった（絞り込まれていた）場合、AIを完全にスキップしてフォールバック実行
+        if not res and actual_use_ai:
+            log_i("ASTAP AI-optimized attempt failed. Falling back to native/original parameters with wider blind solver...")
+            fallback_ra = ra
+            fallback_dec = dec
+            fallback_radius = radius if radius is not None else cfg["radius"]
+            res, proc = execute_solve_astap(fallback_ra, fallback_dec, fallback_radius)
+            onnx_hint_used = False
+            ai_optimized_search = False
+    else:
+        # デフォルトは Astrometry.net
+        res, proc = execute_solve_astrometry(actual_ra, actual_dec, actual_radius)
+        
+        # 解決に失敗し、かつAIがONだった（絞り込まれていた）場合、AIを完全にスキップしてフォールバック実行
+        if not res and actual_use_ai:
+            log_i("AI-optimized attempt failed. Falling back to native/original parameters with wider blind solver...")
+            fallback_ra = ra
+            fallback_dec = dec
+            fallback_radius = radius if radius is not None else cfg["radius"]
+            res, proc = execute_solve_astrometry(fallback_ra, fallback_dec, fallback_radius)
+            onnx_hint_used = False
+            ai_optimized_search = False
     
-    # 解決に失敗し、かつAIがONだった（絞り込まれていた）場合、AIを完全にスキップしてフォールバック実行
-    if not res and actual_use_ai:
-        log_i("AI-optimized attempt failed. Falling back to native/original parameters with wider blind solver...")
-        fallback_ra = ra
-        fallback_dec = dec
-        fallback_radius = radius if radius is not None else cfg["radius"]
-        res, proc = execute_solve(fallback_ra, fallback_dec, fallback_radius)
-        onnx_hint_used = False
-        ai_optimized_search = False
-    
-    for ext in [".jpg", ".wcs", ".solved", ".rdls", ".axy", ".match", ".xyls", ".new"]:
+    for ext in [".jpg", ".wcs", ".solved", ".rdls", ".axy", ".match", ".xyls", ".new", ".ini"]:
         p = img_path.replace(".jpg", ext)
         if os.path.exists(p): os.remove(p)
     
