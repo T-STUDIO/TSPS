@@ -1277,7 +1277,9 @@ async def solve_api(
         cmd_str = ' '.join(cmd)
         log_i(f"Executing ASTAP Plate Solving command: {cmd_str}")
         t0 = time.time()
-        p_raw = subprocess.run(cmd, cwd=WORK_DIR, capture_output=True)
+        env = os.environ.copy()
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        p_raw = subprocess.run(cmd, cwd=WORK_DIR, capture_output=True, env=env)
         elapsed = time.time() - t0
         
         stdout_str = p_raw.stdout.decode('utf-8', errors='ignore') if p_raw.stdout else ""
