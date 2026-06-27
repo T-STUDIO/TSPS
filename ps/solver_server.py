@@ -699,21 +699,21 @@ async def index():
                     <div class="grid">
                         <div><label>Solver Type</label><select id="solver_type" name="solver_type"><option value="astrometry">Astrometry.net</option><option value="astap">ASTAP</option></select></div>
                         <div><label>Downsample</label><input type="number" id="downsample" name="downsample" value="2"></div>
-                        <div><label>SNR (Sigma)</label><input type="number" id="snr" name="snr" value="5"></div>
-                        <div><label>Limit (sec)</label><input type="number" id="cpulimit" name="cpulimit" value="60"></div>
-                        <div style="display:flex; align-items:center; height:100%; padding-top:14px;"><label style="margin-bottom:0; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="use_sextractor" name="use_sextractor" style="width:auto; margin:0;"> Use SExtractor</label></div>
+                        <div><label>SNR (Sigma)</label><input type="number" id="snr" name="snr" value="3"></div>
+                        <div><label>Limit (sec)</label><input type="number" id="cpulimit" name="cpulimit" value="120"></div>
+                        <div style="display:flex; align-items:center; height:100%; padding-top:14px;"><label style="margin-bottom:0; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="use_sextractor" name="use_sextractor" checked style="width:auto; margin:0;"> Use SExtractor</label></div>
                     </div>
                     <div style="margin-top:12px;">
                         <label>Custom Options</label>
-                        <input type="text" id="custom_args" name="custom_args" value="--scale-units degwidth --scale-low 1 --scale-high 10 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize 0">
+                        <input type="text" id="custom_args" name="custom_args" value="--scale-units degwidth --scale-low 1 --scale-high 10 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize">
                     </div>
                 </div>
                 <div class="section-title">AI Engine Settings</div>
                 <div class="section">
                     <div class="grid">
                         <div style="display:flex; align-items:center; height:100%; padding-top:14px;"><label style="margin-bottom:0; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="use_ai" name="use_ai" checked style="width:auto; margin:0;"> Use AI Solver</label></div>
-                        <div><label>AI Thresh (deg)</label><input type="number" id="ai_threshold" name="ai_threshold" value="20.0" step="any"></div>
-                        <div><label>AI Target Radius (deg)</label><input type="number" id="ai_radius" name="ai_radius" value="2.0" step="any"></div>
+                        <div><label>AI Thresh (deg)</label><input type="number" id="ai_threshold" name="ai_threshold" value="180" step="any"></div>
+                        <div><label>AI Target Radius (deg)</label><input type="number" id="ai_radius" name="ai_radius" value="3" step="any"></div>
                     </div>
                     <button type="button" class="solve-btn" style="background:#059669; margin-top:16px;" onclick="trainAI()">TRAIN AI MODEL & SYNC DATABASE</button>
                 </div>
@@ -777,9 +777,9 @@ async def index():
                 }
             }
             async function loadSettings() {
-                let solver_type = 'astrometry', radius = 15, downsample = 2, snr = 5, cpulimit = 60;
-                let custom_args = "--scale-units degwidth --scale-low 1 --scale-high 30 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize";
-                let use_ai = true, use_sextractor = false, ai_threshold = 20.0, ai_radius = 2.0;
+                let solver_type = 'astrometry', radius = 15, downsample = 2, snr = 3, cpulimit = 120;
+                let custom_args = "--scale-units degwidth --scale-low 1 --scale-high 10 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize";
+                let use_ai = true, use_sextractor = true, ai_threshold = 180.0, ai_radius = 3.0;
 
                 try {
                     const r = await fetch('/api/get_config');
@@ -957,13 +957,13 @@ DEFAULT_CONFIG = {
     "solver_type": "astrometry",
     "radius": 15.0,
     "downsample": 2,
-    "snr": 5,
-    "cpulimit": 60,
-    "custom_args": "--scale-units degwidth --scale-low 1 --scale-high 30 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize 10",
+    "snr": 3,
+    "cpulimit": 120,
+    "custom_args": "--scale-units degwidth --scale-low 1 --scale-high 10 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize",
     "use_ai": True,
-    "use_sextractor": False,
-    "ai_threshold": 20.0,
-    "ai_radius": 2.0,
+    "use_sextractor": True,
+    "ai_threshold": 180.0,
+    "ai_radius": 3.0,
     "ai_min_confidence": 0.3
 }
 
@@ -1299,6 +1299,215 @@ async def solve_api(
             "status": "failed", 
             "log": "\n".join(logs) + "\n\n===== Engine StdErr =====\n" + (proc.stderr[-1000:] if (proc and proc.stderr) else "No output.")
         }
+
+# ==========================================
+# ANSVR (Astrometry.net API) Compatibility Endpoints
+# ==========================================
+import json
+import threading
+from fastapi import BackgroundTasks, Request
+
+ansvr_jobs = {}
+ansvr_jobs_lock = threading.Lock()
+
+@app.post("/api/login")
+@app.post("/api/login/")
+async def ansvr_login(request: Request):
+    session_id = "ansvr-session-" + str(uuid.uuid4())[:8]
+    return {"status": "success", "session": session_id}
+
+@app.post("/api/upload")
+@app.post("/api/upload/")
+async def ansvr_upload(
+    background_tasks: BackgroundTasks,
+    request: Request
+):
+    form = await request.form()
+    req_json_str = form.get("request-json", "{}")
+    try:
+        req_json = json.loads(req_json_str)
+    except Exception as e:
+        logger.warning(f"Failed to parse request-json in upload: {e}")
+        req_json = {}
+        
+    upload_file = form.get("file")
+    if not upload_file:
+        return {"status": "failed", "errheader": "No file uploaded"}
+        
+    subid = int(time.time() * 1000) % 10000000
+    
+    img_data = await upload_file.read()
+    temp_img_path = os.path.join(WORK_DIR, f"ansvr_{subid}.jpg")
+    with open(temp_img_path, "wb") as f:
+        f.write(img_data)
+        
+    with ansvr_jobs_lock:
+        ansvr_jobs[subid] = {
+            "status": "solving",
+            "calibration": None,
+            "annotations": []
+        }
+        
+    center_ra = req_json.get("center_ra")
+    center_dec = req_json.get("center_dec")
+    radius = req_json.get("radius")
+    
+    try:
+        if center_ra is not None: center_ra = float(center_ra)
+        if center_dec is not None: center_dec = float(center_dec)
+        if radius is not None: radius = float(radius)
+    except:
+        center_ra, center_dec, radius = None, None, None
+
+    background_tasks.add_task(
+        run_ansvr_solve,
+        subid=subid,
+        img_path=temp_img_path,
+        ra=center_ra,
+        dec=center_dec,
+        radius=radius
+    )
+    
+    return {"status": "success", "subid": subid}
+
+async def run_ansvr_solve(subid: int, img_path: str, ra: Optional[float], dec: Optional[float], radius: Optional[float]):
+    import io
+    from fastapi import UploadFile
+    
+    try:
+        with open(img_path, "rb") as f:
+            content = f.read()
+            
+        class DummyUploadFile(UploadFile):
+            def __init__(self, filename, content_bytes):
+                super().__init__(file=io.BytesIO(content_bytes), filename=filename)
+                
+        dummy_file = DummyUploadFile(filename=f"ansvr_{subid}.jpg", content_bytes=content)
+        
+        api_res = await solve_api(
+            file=dummy_file,
+            ra=ra,
+            dec=dec,
+            radius=radius,
+            snr=None,
+            downsample=None,
+            cpulimit=None,
+            custom_args=None,
+            use_ai=None,
+            use_sextractor=None,
+            ai_threshold=None,
+            ai_radius=None,
+            ai_min_confidence=None,
+            catalog=None,
+            solver_type=None
+        )
+        
+        with ansvr_jobs_lock:
+            if api_res.get("status") == "success":
+                ansvr_jobs[subid] = {
+                    "status": "success",
+                    "calibration": api_res.get("calibration", {}),
+                    "annotations": api_res.get("annotations", [])
+                }
+            else:
+                ansvr_jobs[subid] = {
+                    "status": "failed",
+                    "error": api_res.get("log", "Solve failed")
+                }
+    except Exception as e:
+        logger.error(f"Error in run_ansvr_solve for subid {subid}: {e}")
+        with ansvr_jobs_lock:
+            ansvr_jobs[subid] = {
+                "status": "failed",
+                "error": str(e)
+            }
+    finally:
+        if os.path.exists(img_path):
+            try:
+                os.remove(img_path)
+            except:
+                pass
+
+@app.get("/api/submissions/{subid}")
+@app.get("/api/submissions/{subid}/")
+async def ansvr_submission_status(subid: int):
+    with ansvr_jobs_lock:
+        job = ansvr_jobs.get(subid)
+        
+    if not job:
+        return {
+            "user": 1,
+            "processing_started": "2026-06-26 12:00:00",
+            "processing_finished": "2026-06-26 12:00:00",
+            "jobs": [],
+            "job_calibrations": []
+        }
+        
+    if job["status"] == "solving":
+        return {
+            "user": 1,
+            "processing_started": "2026-06-26 12:00:00",
+            "processing_finished": None,
+            "jobs": [],
+            "job_calibrations": []
+        }
+    elif job["status"] == "success":
+        return {
+            "user": 1,
+            "processing_started": "2026-06-26 12:00:00",
+            "processing_finished": "2026-06-26 12:00:05",
+            "jobs": [subid],
+            "job_calibrations": [[subid, subid]]
+        }
+    else:
+        return {
+            "user": 1,
+            "processing_started": "2026-06-26 12:00:00",
+            "processing_finished": "2026-06-26 12:00:05",
+            "jobs": [subid],
+            "job_calibrations": []
+        }
+
+@app.get("/api/jobs/{jobid}")
+@app.get("/api/jobs/{jobid}/")
+@app.get("/api/jobs/{jobid}/info")
+@app.get("/api/jobs/{jobid}/info/")
+async def ansvr_job_info(jobid: int):
+    with ansvr_jobs_lock:
+        job = ansvr_jobs.get(jobid)
+        
+    if not job:
+        return {"status": "failure"}
+        
+    if job["status"] == "solving":
+        return {"status": "solving"}
+    elif job["status"] == "success":
+        return {"status": "success"}
+    else:
+        return {"status": "failure"}
+
+@app.get("/api/jobs/{jobid}/calibration")
+@app.get("/api/jobs/{jobid}/calibration/")
+async def ansvr_job_calibration(jobid: int):
+    with ansvr_jobs_lock:
+        job = ansvr_jobs.get(jobid)
+        
+    if not job or job["status"] != "success":
+        return {"status": "failure"}
+        
+    cal = job["calibration"]
+    if not cal:
+        return {"status": "failure"}
+        
+    return {
+        "status": "success",
+        "center_ra": cal.get("ra", 0.0),
+        "center_dec": cal.get("dec", 0.0),
+        "radius": cal.get("radius", 0.0),
+        "pixscale": cal.get("pixscale", 0.0),
+        "orientation": cal.get("orientation", 0.0),
+        "parity": cal.get("parity", 1)
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6001)
