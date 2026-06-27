@@ -1260,39 +1260,117 @@ async def solve_api(
 
     # ASTAP実行用の共通関数 (新規追加)
     def execute_solve_astap(p_ra, p_dec, p_radius):
-        cmd = ["astap", "-f", img_path]
+        cmd_base = ["astap", "-f", img_path]
         if p_ra is not None and p_dec is not None:
             # ASTAPでは-raは時（hours）で渡すのが最も誤認が少なく安全です
             ra_hours = p_ra / 15.0
-            cmd.extend(["-ra", str(ra_hours), "-dec", str(p_dec)])
+            cmd_base.extend(["-ra", str(ra_hours), "-dec", str(p_dec)])
             if p_radius is not None:
-                cmd.extend(["-r", str(p_radius)])
+                cmd_base.extend(["-r", str(p_radius)])
         
         # ダウンサンプリング (ASTAPでは -z がbinningに対応、0=auto)
         if actual_downsample is not None:
-            cmd.extend(["-z", str(actual_downsample)])
+            cmd_base.extend(["-z", str(actual_downsample)])
         else:
-            cmd.extend(["-z", "0"])
+            cmd_base.extend(["-z", "0"])
             
+        # DISPLAY環境変数の候補を作成
+        candidate_displays = []
+        if "DISPLAY" in os.environ and os.environ["DISPLAY"]:
+            candidate_displays.append(os.environ["DISPLAY"])
+            
+        # /tmp/.X11-unix から現在アクティブなXディスプレイソケットを自動検出
+        x11_dir = "/tmp/.X11-unix"
+        detected_displays = []
+        if os.path.isdir(x11_dir):
+            try:
+                for f in os.listdir(x11_dir):
+                    if f.startswith("X"):
+                        try:
+                            num = int(f[1:])
+                            detected_displays.append(f":{num}")
+                        except ValueError:
+                            pass
+            except Exception as e:
+                log_w(f"Failed to scan {x11_dir} for display auto-detection: {e}")
+        
+        detected_displays.sort()
+        for d in detected_displays:
+            if d not in candidate_displays:
+                candidate_displays.append(d)
+                
+        # 典型的なデフォルト値を追加
+        for default_d in [":1", ":0", ":2"]:
+            if default_d not in candidate_displays:
+                candidate_displays.append(default_d)
+                
+        log_i(f"Candidate X11 displays for ASTAP execution: {candidate_displays}")
+        
+        # XAUTHORITYの自動設定
+        env_base = os.environ.copy()
+        env_base["QT_QPA_PLATFORM"] = "offscreen"
+        if "XAUTHORITY" not in env_base or not env_base["XAUTHORITY"]:
+            home_candidates = [
+                os.path.expanduser("~"),
+                "/home/astrpc",
+                "/home/rpc",
+                "/root"
+            ]
+            for hc in home_candidates:
+                xa = os.path.join(hc, ".Xauthority")
+                if os.path.exists(xa):
+                    env_base["XAUTHORITY"] = xa
+                    log_i(f"Auto-configured XAUTHORITY path: {xa}")
+                    break
+                    
         import shutil
         xvfb_cmd = shutil.which("xvfb-run")
-        if xvfb_cmd:
-            log_i(f"Found xvfb-run at {xvfb_cmd}. Wrapping ASTAP execution with virtual frame buffer...")
-            cmd = [xvfb_cmd, "-a"] + cmd
-        else:
-            log_w("xvfb-run not found on system. Running ASTAP directly (may fail on headless systems if not compiled with headless options or display is missing).")
+        
+        p_raw = None
+        elapsed = 0.0
+        used_display = None
+        
+        # 各ディスプレイを順に試行
+        for display in candidate_displays:
+            current_cmd = list(cmd_base)
+            env = env_base.copy()
+            env["DISPLAY"] = display
             
-        cmd_str = ' '.join(cmd)
-        log_i(f"Executing ASTAP Plate Solving command: {cmd_str}")
-        t0 = time.time()
-        env = os.environ.copy()
-        env["QT_QPA_PLATFORM"] = "offscreen"
-        p_raw = subprocess.run(cmd, cwd=WORK_DIR, capture_output=True, env=env)
-        elapsed = time.time() - t0
-        
-        stdout_str = p_raw.stdout.decode('utf-8', errors='ignore') if p_raw.stdout else ""
-        stderr_str = p_raw.stderr.decode('utf-8', errors='ignore') if p_raw.stderr else ""
-        
+            if xvfb_cmd:
+                run_cmd = [xvfb_cmd, "-a"] + current_cmd
+                log_i("Attempting ASTAP with xvfb-run wrapper...")
+            else:
+                run_cmd = current_cmd
+                
+            cmd_str = ' '.join(run_cmd)
+            log_i(f"Executing ASTAP on DISPLAY={display}: {cmd_str}")
+            
+            t0 = time.time()
+            p_raw = subprocess.run(run_cmd, cwd=WORK_DIR, capture_output=True, env=env)
+            elapsed = time.time() - t0
+            
+            stdout_str = p_raw.stdout.decode('utf-8', errors='ignore') if p_raw.stdout else ""
+            stderr_str = p_raw.stderr.decode('utf-8', errors='ignore') if p_raw.stderr else ""
+            
+            has_display_error = "cannot open display" in stderr_str.lower() or "cannot open display" in stdout_str.lower()
+            
+            if has_display_error:
+                log_w(f"ASTAP on DISPLAY={display} failed with 'cannot open display'. Trying next candidate...")
+                continue
+            else:
+                used_display = display
+                log_i(f"ASTAP executed successfully on DISPLAY={display} (No display connection errors)")
+                break
+        else:
+            log_w("All specified DISPLAY candidates failed with display connection errors. Performing final raw headless attempt...")
+            run_cmd = cmd_base
+            t0 = time.time()
+            p_raw = subprocess.run(run_cmd, cwd=WORK_DIR, capture_output=True, env=env_base)
+            elapsed = time.time() - t0
+            stdout_str = p_raw.stdout.decode('utf-8', errors='ignore') if p_raw.stdout else ""
+            stderr_str = p_raw.stderr.decode('utf-8', errors='ignore') if p_raw.stderr else ""
+            used_display = "None (Raw Fallback)"
+            
         p = subprocess.CompletedProcess(
             args=p_raw.args,
             returncode=p_raw.returncode,
@@ -1300,7 +1378,7 @@ async def solve_api(
             stderr=stderr_str
         )
         
-        log_i(f"ASTAP completed in {elapsed:.2f}s (Exit code: {p.returncode})")
+        log_i(f"ASTAP completed on DISPLAY={used_display} in {elapsed:.2f}s (Exit code: {p.returncode})")
         
         if p.stdout:
             logger.info("=== ASTAP STDOUT (Full Text for Server Log) ===")
