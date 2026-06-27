@@ -1120,22 +1120,78 @@ async def solve_api(
 
     # solve-field実行用の共通関数
     def execute_solve_astrometry(p_ra, p_dec, p_radius):
+        import shutil
+        use_manual_sextractor = False
+        fits_cat_path = None
+        param_path = None
+        
+        wants_sextractor = actual_use_sextractor
+        if actual_custom_args and "--use-sextractor" in actual_custom_args:
+            wants_sextractor = True
+            
+        if wants_sextractor:
+            sextractor_cmd = None
+            for c in ["source-extractor", "sextractor", "sex"]:
+                if shutil.which(c):
+                    sextractor_cmd = c
+                    break
+            
+            if sextractor_cmd:
+                log_i(f"Found SExtractor executable: '{sextractor_cmd}'. Performing manual source extraction to feed into solve-field...")
+                try:
+                    param_path = os.path.join(os.path.dirname(img_path), f"sextractor_{uuid.uuid4().hex[:8]}.param")
+                    with open(param_path, "w") as pf:
+                        pf.write("X_IMAGE\nY_IMAGE\nMAG_AUTO\n")
+                    
+                    fits_cat_path = os.path.join(os.path.dirname(img_path), f"sextractor_{uuid.uuid4().hex[:8]}.fits")
+                    
+                    cmd_sex = [
+                        sextractor_cmd,
+                        img_path,
+                        "-CATALOG_NAME", fits_cat_path,
+                        "-CATALOG_TYPE", "FITS_LDAC",
+                        "-PARAMETERS_NAME", param_path,
+                        "-DETECT_MINAREA", "3",
+                        "-DETECT_THRESH", "2.0",
+                        "-ANALYSIS_THRESH", "2.0"
+                    ]
+                    
+                    sex_proc = subprocess.run(cmd_sex, capture_output=True, text=True, timeout=15)
+                    if sex_proc.returncode == 0 and os.path.exists(fits_cat_path) and os.path.getsize(fits_cat_path) > 0:
+                        use_manual_sextractor = True
+                        log_i(f"SExtractor extracted star catalogue successfully. Saved to: {fits_cat_path}")
+                    else:
+                        log_w(f"SExtractor returned non-zero code ({sex_proc.returncode}) or output is empty. StdErr: {sex_proc.stderr}")
+                except Exception as e:
+                    log_w(f"Failed to execute manual SExtractor: {e}")
+            else:
+                log_w("SExtractor executable not found on system. Falling back to native source extractor.")
+
+        solve_input = fits_cat_path if use_manual_sextractor else img_path
         cmd = [
-            "solve-field", img_path, "--overwrite", "--no-plots", 
+            "solve-field", solve_input, "--overwrite", "--no-plots", 
             "--cpulimit", str(actual_cpulimit), 
-            "--downsample", str(actual_downsample),
-            "--sigma", str(actual_snr) 
         ]
-        if actual_use_sextractor:
-            cmd.append("--use-sextractor")
+        if use_manual_sextractor:
+            cmd.extend(["--width", str(actual_w), "--height", str(actual_h)])
+        else:
+            cmd.extend([
+                "--downsample", str(actual_downsample),
+                "--sigma", str(actual_snr) 
+            ])
+            
         if p_ra is not None and p_dec is not None:
             cmd.extend(["--ra", str(p_ra), "--dec", str(p_dec), "--radius", str(p_radius)])
+            
         if actual_custom_args:
             raw_args = actual_custom_args.replace("--snr", "--sigma").split()
             fixed_args = []
             i = 0
             while i < len(raw_args):
                 arg = raw_args[i]
+                if arg == "--use-sextractor":
+                    i += 1
+                    continue
                 fixed_args.append(arg)
                 if arg == "--uniformize":
                     if i + 1 >= len(raw_args) or raw_args[i+1].startswith("-"):
@@ -1183,7 +1239,23 @@ async def solve_api(
             for line in err_lines:
                 log_i("  " + line)
                 
-        wcs_res = parse_wcs_and_annotate(img_path.replace(".jpg", ".wcs"), float(actual_w), float(actual_h), custom_db=custom_db)
+        expected_wcs_path = solve_input.rsplit(".", 1)[0] + ".wcs"
+        wcs_res = parse_wcs_and_annotate(expected_wcs_path, float(actual_w), float(actual_h), custom_db=custom_db)
+        
+        img_wcs_path = img_path.replace(".jpg", ".wcs")
+        if use_manual_sextractor and os.path.exists(expected_wcs_path):
+            try:
+                shutil.copy(expected_wcs_path, img_wcs_path)
+            except Exception as e:
+                logger.warning(f"Failed to copy wcs from {expected_wcs_path} to {img_wcs_path}: {e}")
+                
+        for temp_f in [param_path, fits_cat_path]:
+            if temp_f and os.path.exists(temp_f):
+                try:
+                    os.remove(temp_f)
+                except Exception as e:
+                    logger.warning(f"Failed to remove temp file {temp_f}: {e}")
+                    
         return wcs_res, p
 
     # ASTAP実行用の共通関数 (新規追加)
