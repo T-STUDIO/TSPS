@@ -1022,7 +1022,10 @@ async def solve_api(
     solver_type: Optional[str] = Form(None)
 ):
     sid = str(uuid.uuid4())
-    img_path = os.path.join(WORK_DIR, f"{sid}.jpg")
+    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ".jpg"
+    if not ext:
+        ext = ".jpg"
+    img_path = os.path.join(WORK_DIR, f"{sid}{ext}")
     
     img_data = await file.read()
     with open(img_path, "wb") as f:
