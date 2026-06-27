@@ -1022,10 +1022,11 @@ async def solve_api(
     solver_type: Optional[str] = Form(None)
 ):
     sid = str(uuid.uuid4())
-    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ".jpg"
-    if not ext:
-        ext = ".jpg"
-    img_path = os.path.join(WORK_DIR, f"{sid}{ext}")
+    orig_filename = file.filename or ""
+    orig_ext = os.path.splitext(orig_filename)[1].lower() if orig_filename else ".jpg"
+    if not orig_ext:
+        orig_ext = ".jpg"
+    img_path = os.path.join(WORK_DIR, f"{sid}{orig_ext}")
     
     img_data = await file.read()
     with open(img_path, "wb") as f:
@@ -1245,7 +1246,7 @@ async def solve_api(
         expected_wcs_path = solve_input.rsplit(".", 1)[0] + ".wcs"
         wcs_res = parse_wcs_and_annotate(expected_wcs_path, float(actual_w), float(actual_h), custom_db=custom_db)
         
-        img_wcs_path = img_path.replace(".jpg", ".wcs")
+        img_wcs_path = os.path.splitext(img_path)[0] + ".wcs"
         if use_manual_sextractor and os.path.exists(expected_wcs_path):
             try:
                 shutil.copy(expected_wcs_path, img_wcs_path)
@@ -1263,7 +1264,7 @@ async def solve_api(
 
     # ASTAP実行用の共通関数 (新規追加)
     def execute_solve_astap(p_ra, p_dec, p_radius):
-        cmd_base = ["astap", "-f", img_path]
+        cmd_base = ["astap", "-f", img_path, "-headless"]
         if p_ra is not None and p_dec is not None:
             # ASTAPでは-raは時（hours）で渡すのが最も誤認が少なく安全です
             ra_hours = p_ra / 15.0
@@ -1404,7 +1405,8 @@ async def solve_api(
                 log_i("  " + line)
                 
         # Check if .ini file was written and log its contents for detailed investigation
-        ini_path = img_path.replace(".jpg", ".ini")
+        base_path = os.path.splitext(img_path)[0]
+        ini_path = base_path + ".ini"
         if os.path.exists(ini_path):
             log_i(f"ASTAP generated .ini configuration/results file ({ini_path}):")
             try:
@@ -1418,7 +1420,7 @@ async def solve_api(
             except Exception as e:
                 logger.warning(f"Failed to read ASTAP .ini file: {e}")
                 
-        wcs_res = parse_wcs_and_annotate(img_path.replace(".jpg", ".wcs"), float(actual_w), float(actual_h), custom_db=custom_db)
+        wcs_res = parse_wcs_and_annotate(base_path + ".wcs", float(actual_w), float(actual_h), custom_db=custom_db)
         return wcs_res, p
 
     # 選択されたソルバータイプに基づいて解決
@@ -1448,8 +1450,15 @@ async def solve_api(
             onnx_hint_used = False
             ai_optimized_search = False
     
-    for ext in [".jpg", ".wcs", ".solved", ".rdls", ".axy", ".match", ".xyls", ".new", ".ini"]:
-        p = img_path.replace(".jpg", ext)
+    base_img_path = os.path.splitext(img_path)[0]
+    orig_ext = os.path.splitext(img_path)[1].lower()
+    
+    clean_extensions = [".wcs", ".solved", ".rdls", ".axy", ".match", ".xyls", ".new", ".ini"]
+    if orig_ext not in clean_extensions:
+        clean_extensions.append(orig_ext)
+        
+    for ext in clean_extensions:
+        p = base_img_path + ext
         if os.path.exists(p): os.remove(p)
     
     # AI動作詳細情報 (動作状況表示のため、Pythonのサーバーログに直接詳細出力する)
