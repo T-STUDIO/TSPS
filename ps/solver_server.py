@@ -579,13 +579,21 @@ def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None, is_astap=Fals
         
         if wcs['crval1'] is None: return None
 
+        actual_w = get_v('IMAGEW') or img_w
+        actual_h = get_v('IMAGEH') or img_h
+
+        if is_astap:
+            # ASTAPはFITS標準（左下原点、ボトムアップ）でWCSを出力するため、
+            # JPG等（左上原点、トップダウン）の座標系に合わせてWCSパラメータ自体を垂直反転（Y軸反転）変換します。
+            wcs['crpix2'] = actual_h + 1.0 - wcs['crpix2']
+            wcs['cd1_2'] = -wcs['cd1_2']
+            wcs['cd2_2'] = -wcs['cd2_2']
+
         # --- T-Astro Web Studio の座標同期(Sync)に必要な計算 ---
         det = wcs['cd1_1'] * wcs['cd2_2'] - wcs['cd1_2'] * wcs['cd2_1']
         scale = math.sqrt(abs(det)) * 3600.0
         parity = 1 if det > 0 else -1
         rotation = math.degrees(math.atan2(wcs['cd1_2'], wcs['cd1_1']))
-        actual_w = get_v('IMAGEW') or img_w
-        actual_h = get_v('IMAGEH') or img_h
         radius = (scale * max(actual_w, actual_h) / 3600.0) / 2.0
 
         ans = []
@@ -594,8 +602,8 @@ def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None, is_astap=Fals
             obj_dec = parse_coord_to_degrees(obj.get('dec', 0.0))
             p = wcs_to_pixel_perfect(obj_ra, obj_dec, wcs, actual_w, actual_h)
             if p and 0 <= p['x'] <= actual_w and 0 <= p['y'] <= actual_h:
-                y_val = actual_h - p['y'] if is_astap else p['y']
-                ans.append({"x": p['x'], "y": y_val, "names": [obj.get('name', 'Unknown')], "radius": 15})
+                # WCS自体がJPG座標系に反転済みのため、そのままのp['y']を使用します。
+                ans.append({"x": p['x'], "y": p['y'], "names": [obj.get('name', 'Unknown')], "radius": 15})
 
         return {
             "calibration": {
