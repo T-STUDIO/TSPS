@@ -561,7 +561,7 @@ def wcs_to_pixel_perfect(ra, dec, wcs, img_w, img_h):
         return {"x": wcs['crpix1'] + dx - 1.0, "y": wcs['crpix2'] + dy - 1.0}
     except: return None
 
-def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None):
+def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None, is_astap=False):
     if not os.path.exists(wcs_path): return None
     db = custom_db if custom_db else load_astro_db()
     try:
@@ -594,7 +594,8 @@ def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None):
             obj_dec = parse_coord_to_degrees(obj.get('dec', 0.0))
             p = wcs_to_pixel_perfect(obj_ra, obj_dec, wcs, actual_w, actual_h)
             if p and 0 <= p['x'] <= actual_w and 0 <= p['y'] <= actual_h:
-                ans.append({"x": p['x'], "y": p['y'], "names": [obj.get('name', 'Unknown')], "radius": 15})
+                y_val = actual_h - p['y'] if is_astap else p['y']
+                ans.append({"x": p['x'], "y": y_val, "names": [obj.get('name', 'Unknown')], "radius": 15})
 
         return {
             "calibration": {
@@ -1420,7 +1421,7 @@ async def solve_api(
             except Exception as e:
                 logger.warning(f"Failed to read ASTAP .ini file: {e}")
                 
-        wcs_res = parse_wcs_and_annotate(base_path + ".wcs", float(actual_w), float(actual_h), custom_db=custom_db)
+        wcs_res = parse_wcs_and_annotate(base_path + ".wcs", float(actual_w), float(actual_h), custom_db=custom_db, is_astap=True)
         return wcs_res, p
 
     # 選択されたソルバータイプに基づいて解決
