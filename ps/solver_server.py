@@ -1274,6 +1274,14 @@ async def solve_api(
         else:
             cmd.extend(["-z", "0"])
             
+        import shutil
+        xvfb_cmd = shutil.which("xvfb-run")
+        if xvfb_cmd:
+            log_i(f"Found xvfb-run at {xvfb_cmd}. Wrapping ASTAP execution with virtual frame buffer...")
+            cmd = [xvfb_cmd, "-a"] + cmd
+        else:
+            log_w("xvfb-run not found on system. Running ASTAP directly (may fail on headless systems if not compiled with headless options or display is missing).")
+            
         cmd_str = ' '.join(cmd)
         log_i(f"Executing ASTAP Plate Solving command: {cmd_str}")
         t0 = time.time()
@@ -1313,6 +1321,21 @@ async def solve_api(
             log_i("ASTAP stderr (last 5 lines):")
             for line in err_lines:
                 log_i("  " + line)
+                
+        # Check if .ini file was written and log its contents for detailed investigation
+        ini_path = img_path.replace(".jpg", ".ini")
+        if os.path.exists(ini_path):
+            log_i(f"ASTAP generated .ini configuration/results file ({ini_path}):")
+            try:
+                with open(ini_path, "r", encoding="utf-8", errors="ignore") as f_ini:
+                    for line in f_ini:
+                        line_s = line.strip()
+                        if line_s:
+                            log_i(f"  [ini] {line_s}")
+                            if "error" in line_s.lower() or "warning" in line_s.lower() or "db" in line_s.lower() or "database" in line_s.lower():
+                                log_w(f"ASTAP Info/Warning: {line_s}")
+            except Exception as e:
+                logger.warning(f"Failed to read ASTAP .ini file: {e}")
                 
         wcs_res = parse_wcs_and_annotate(img_path.replace(".jpg", ".wcs"), float(actual_w), float(actual_h), custom_db=custom_db)
         return wcs_res, p
