@@ -3,6 +3,7 @@ import re
 import math
 import uuid
 import subprocess
+import zipfile
 import uvicorn
 import logging
 import json
@@ -667,6 +668,82 @@ INDEX_METADATA = [
     {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GiB", "pattern": "index-5200-*.fits", "url": "http://data.astrometry.net/5200/index-5200.fits"}
 ]
 
+ASTAP_INDEX_METADATA = [
+    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "3.4 GiB", "pattern": "d80*.astap", "url": "https://www.hnsky.org/d80_v18.zip", "is_zip": True},
+    {"num": "D50", "fov": "0.10° - 2.0°", "size_desc": "1.2 GiB", "pattern": "d50*.astap", "url": "https://www.hnsky.org/d50_v18.zip", "is_zip": True},
+    {"num": "D20", "fov": "0.05° - 0.5°", "size_desc": "4.5 GiB", "pattern": "d20*.astap", "url": "https://www.hnsky.org/d20_v18.zip", "is_zip": True},
+    {"num": "D05", "fov": "0.01° - 0.1°", "size_desc": "18 GiB", "pattern": "d05*.astap", "url": "https://www.hnsky.org/d05_v18.zip", "is_zip": True},
+    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MiB", "pattern": "v50*.astap", "url": "https://www.hnsky.org/v50_v18.zip", "is_zip": True},
+    {"num": "V05", "fov": "0.2° - 5.0°", "size_desc": "1.4 GiB", "pattern": "v05*.astap", "url": "https://www.hnsky.org/v05_v18.zip", "is_zip": True},
+    {"num": "W08", "fov": "8° - 120°", "size_desc": "23 MiB", "pattern": "w08*.astap", "url": "https://www.hnsky.org/w08_v18.zip", "is_zip": True},
+    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MiB", "pattern": "hyperleda.astap", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
+]
+
+ASTAP_DOWNLOAD_TASKS = {}
+ASTAP_DIR = "/opt/astap"
+
+def astap_download_worker(num, url, pattern, is_zip):
+    key = num
+    download_filename = url.split('/')[-1]
+    target_filepath = os.path.join(ASTAP_DIR, download_filename)
+    try:
+        if not os.path.exists(ASTAP_DIR):
+            os.makedirs(ASTAP_DIR, exist_ok=True)
+            
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            total_size = int(response.headers.get('content-length', 0))
+            chunk_size = 1024 * 64
+            downloaded = 0
+            
+            with open(target_filepath, 'wb') as f:
+                while True:
+                    if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                        ASTAP_DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                        break
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = int((downloaded / total_size) * 100)
+                        ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
+                    else:
+                        ASTAP_DOWNLOAD_TASKS[key]["progress"] = 50
+                        
+            if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+                if is_zip:
+                    ASTAP_DOWNLOAD_TASKS[key]["status"] = "extracting"
+                    try:
+                        with zipfile.ZipFile(target_filepath, 'r') as zip_ref:
+                            zip_ref.extractall(ASTAP_DIR)
+                        extracted_files = glob.glob(os.path.join(ASTAP_DIR, pattern))
+                        for ef in extracted_files:
+                            try: os.chmod(ef, 0o777)
+                            except: pass
+                    finally:
+                        if os.path.exists(target_filepath):
+                            os.remove(target_filepath)
+                else:
+                    try:
+                        os.chmod(target_filepath, 0o777)
+                    except Exception as pe:
+                        logger.warning(f"Failed to chmod file {target_filepath}: {pe}")
+                
+                ASTAP_DOWNLOAD_TASKS[key]["status"] = "completed"
+                ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
+            else:
+                if os.path.exists(target_filepath):
+                    os.remove(target_filepath)
+    except Exception as e:
+        logger.error(f"ASTAP Download Error for {num}: {e}")
+        ASTAP_DOWNLOAD_TASKS[key]["status"] = "failed"
+        ASTAP_DOWNLOAD_TASKS[key]["err_msg"] = str(e)
+        if os.path.exists(target_filepath):
+            try: os.remove(target_filepath)
+            except: pass
+
 DOWNLOAD_TASKS = {}
 
 def download_worker(dir_path, num, url, filename):
@@ -853,6 +930,147 @@ async def api_delete_index(request: Request):
     key = (path, num)
     if key in DOWNLOAD_TASKS:
         DOWNLOAD_TASKS.pop(key, None)
+        
+    return {
+        "status": "completed",
+        "deleted_count": deleted_count,
+        "errors": errors
+    }
+
+@app.get("/api/scanned_astap_indices")
+async def api_scanned_astap_indices():
+    exists = os.path.exists(ASTAP_DIR)
+    writable = False
+    err_msg = ""
+    if exists:
+        try:
+            test_file = os.path.join(ASTAP_DIR, ".test_write_permission")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            writable = True
+        except Exception as e:
+            writable = False
+            err_msg = str(e)
+    else:
+        try:
+            os.makedirs(ASTAP_DIR, exist_ok=True)
+            exists = True
+            writable = True
+        except Exception as e:
+            err_msg = "ディレクトリが存在せず、作成にも失敗しました: " + str(e)
+
+    scanned = []
+    for item in ASTAP_INDEX_METADATA:
+        pattern = item["pattern"]
+        num = item["num"]
+        
+        actual_files = []
+        if exists:
+            search_pattern = os.path.join(ASTAP_DIR, pattern)
+            actual_files = glob.glob(search_pattern)
+            
+        installed = len(actual_files) > 0
+        actual_size_desc = ""
+        if installed:
+            actual_size_desc = get_file_size_desc(actual_files[0])
+            
+        task = ASTAP_DOWNLOAD_TASKS.get(num, {})
+        status = task.get("status", "idle")
+        progress = task.get("progress", 0)
+        task_err = task.get("err_msg", "")
+        
+        if status == "completed" and not installed:
+            status = "idle"
+            progress = 0
+
+        scanned.append({
+            "num": num,
+            "fov": item["fov"],
+            "size_desc": item["size_desc"],
+            "pattern": pattern,
+            "installed": installed,
+            "actual_size_desc": actual_size_desc,
+            "status": status,
+            "progress": progress,
+            "err_msg": task_err
+        })
+
+    return {
+        "path": ASTAP_DIR,
+        "exists": exists,
+        "writable": writable,
+        "err_msg": err_msg,
+        "indices": scanned
+    }
+
+@app.post("/api/download_astap_index")
+async def api_download_astap_index(request: Request):
+    data = await request.json()
+    num = data.get("num")
+    
+    if not num:
+        raise HTTPException(status_code=400, detail="Missing num")
+        
+    meta = next((x for x in ASTAP_INDEX_METADATA if x["num"] == num), None)
+    if not meta:
+        raise HTTPException(status_code=404, detail="ASTAP index meta not found")
+        
+    if ASTAP_DOWNLOAD_TASKS.get(num, {}).get("status") in ["downloading", "extracting"]:
+        return {"status": "already_downloading"}
+        
+    ASTAP_DOWNLOAD_TASKS[num] = {
+        "status": "downloading",
+        "progress": 0,
+        "stop": False,
+        "thread": None
+    }
+    
+    t = threading.Thread(
+        target=astap_download_worker,
+        args=(num, meta["url"], meta["pattern"], meta["is_zip"]),
+        daemon=True
+    )
+    ASTAP_DOWNLOAD_TASKS[num]["thread"] = t
+    t.start()
+    return {"status": "started"}
+
+@app.post("/api/cancel_astap_download")
+async def api_cancel_astap_download(request: Request):
+    data = await request.json()
+    num = data.get("num")
+    if num in ASTAP_DOWNLOAD_TASKS:
+        ASTAP_DOWNLOAD_TASKS[num]["stop"] = True
+        return {"status": "cancelled_signal_sent"}
+    return {"status": "not_running"}
+
+@app.post("/api/delete_astap_index")
+async def api_delete_astap_index(request: Request):
+    data = await request.json()
+    num = data.get("num")
+    
+    if not num:
+        raise HTTPException(status_code=400, detail="Missing num")
+        
+    meta = next((x for x in ASTAP_INDEX_METADATA if x["num"] == num), None)
+    if not meta:
+        raise HTTPException(status_code=404, detail="ASTAP index meta not found")
+        
+    pattern = meta["pattern"]
+    search_pattern = os.path.join(ASTAP_DIR, pattern)
+    files = glob.glob(search_pattern)
+    
+    deleted_count = 0
+    errors = []
+    for f in files:
+        try:
+            os.remove(f)
+            deleted_count += 1
+        except Exception as e:
+            errors.append(str(e))
+            
+    if num in ASTAP_DOWNLOAD_TASKS:
+        ASTAP_DOWNLOAD_TASKS.pop(num, None)
         
     return {
         "status": "completed",
@@ -1099,9 +1317,15 @@ async def index_manager():
                 度数（Degree）表記の対応視野角から、ご自身の望遠鏡・カメラシステムに最適なインデックスを選択して簡単にインストール/アンインストールできます。
             </p>
 
-            <!-- 保存先選択 -->
-            <div class="form-group">
-                <label for="dir-select">💾 保存先ディレクトリ</label>
+            <!-- 管理対象の選択（タブ） -->
+            <div style="display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 1px solid var(--border-color); padding-bottom: 15px;">
+                <button id="tab-astrometry" class="btn btn-blue" onclick="switchManager('astrometry')" style="flex: 1;">Astrometry.net インデックス管理</button>
+                <button id="tab-astap" class="btn" style="background: #4b5563; color: white; flex: 1;" onclick="switchManager('astap')">ASTAP インデックス管理</button>
+            </div>
+
+            <!-- Astrometry.net 保存先選択 -->
+            <div id="astrometry-dir-container" class="form-group">
+                <label for="dir-select">💾 Astrometry.net 保存先ディレクトリ</label>
                 <div style="display: flex; gap: 10px; margin-bottom: 8px;">
                     <select id="dir-select" onchange="onDirChanged()" style="flex: 1;">
                         <!-- JavaScriptで動的に生成されます -->
@@ -1120,11 +1344,20 @@ async def index_manager():
                 </div>
             </div>
 
+            <!-- ASTAP 保存先固定表示 -->
+            <div id="astap-dir-container" class="form-group" style="display: none;">
+                <label>💾 ASTAP 保存先ディレクトリ (固定)</label>
+                <div style="display: flex; flex-direction: column; gap: 8px; background: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+                    <input type="text" value="/opt/astap" readonly style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-muted); font-size: 0.95rem; box-sizing: border-box; cursor: not-allowed;">
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">※ ASTAPのインデックスファイルは /opt/astap ディレクトリに固定配置されます。</div>
+                </div>
+            </div>
+
             <!-- パーミッションステータス -->
             <div id="status-panel" class="status-panel"></div>
 
-            <h3 style="border-left: 4px solid var(--accent-blue); padding-left: 10px; margin-top: 30px;">📂 インデックスファイル一覧 (5200番台対応)</h3>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: -5px; margin-bottom: 15px;">
+            <h3 id="list-title" style="border-left: 4px solid var(--accent-blue); padding-left: 10px; margin-top: 30px;">📂 インデックスファイル一覧 (5200番台対応)</h3>
+            <p id="list-desc" style="color: var(--text-muted); font-size: 0.85rem; margin-top: -5px; margin-bottom: 15px;">
                 チェックを入れると自動でダウンロードを開始し、チェックを外すと削除されます。
             </p>
 
@@ -1152,6 +1385,7 @@ async def index_manager():
             let currentPath = "";
             let pollTimer = null;
             let downloadingNum = null;
+            let currentType = "astrometry";
 
             const DEFAULT_DIRS = [
                 "/home/astrpi64/.local/share/kstars/astrometry",
@@ -1201,9 +1435,52 @@ async def index_manager():
                 const savedLastPath = localStorage.getItem("last_index_path");
                 renderDirSelect(savedLastPath);
                 
-                if (currentPath) {
-                    scanDirectory();
+                const savedType = localStorage.getItem("last_index_type") || "astrometry";
+                switchManager(savedType);
+            }
+
+            function switchManager(type) {
+                currentType = type;
+                localStorage.setItem("last_index_type", type);
+                
+                const tabAstrometry = document.getElementById("tab-astrometry");
+                const tabAstap = document.getElementById("tab-astap");
+                const astrometryDirContainer = document.getElementById("astrometry-dir-container");
+                const astapDirContainer = document.getElementById("astap-dir-container");
+                const listTitle = document.getElementById("list-title");
+                const listDesc = document.getElementById("list-desc");
+
+                if (type === "astrometry") {
+                    tabAstrometry.className = "btn btn-blue";
+                    tabAstap.className = "btn";
+                    tabAstap.style.background = "#4b5563";
+                    tabAstap.style.color = "white";
+                    
+                    astrometryDirContainer.style.display = "block";
+                    astapDirContainer.style.display = "none";
+                    listTitle.textContent = "📂 インデックスファイル一覧 (5200番台対応)";
+                    listDesc.textContent = "チェックを入れると自動でダウンロードを開始し、チェックを外すと削除されます。";
+                } else {
+                    tabAstap.className = "btn btn-blue";
+                    tabAstap.style.background = "";
+                    tabAstap.style.color = "";
+                    tabAstrometry.className = "btn";
+                    tabAstrometry.style.background = "#4b5563";
+                    tabAstrometry.style.color = "white";
+                    
+                    astrometryDirContainer.style.display = "none";
+                    astapDirContainer.style.display = "block";
+                    listTitle.textContent = "📂 ASTAP インデックス（星表データベース）一覧";
+                    listDesc.textContent = "ASTAP用の星表ファイルを管理します。チェックを入れるとダウンロードを開始し、チェックを外すと削除されます。";
                 }
+                
+                if (pollTimer) {
+                    clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+                document.getElementById("global-progress").style.display = "none";
+                
+                scanDirectory();
             }
 
             function onDirChanged() {
@@ -1290,7 +1567,13 @@ async def index_manager():
 
             async function scanDirectory() {
                 try {
-                    const res = await fetch(`/api/scanned_indices?path=${encodeURIComponent(currentPath)}`);
+                    let url = "";
+                    if (currentType === "astrometry") {
+                        url = `/api/scanned_indices?path=${encodeURIComponent(currentPath)}`;
+                    } else {
+                        url = `/api/scanned_astap_indices`;
+                    }
+                    const res = await fetch(url);
                     if (!res.ok) throw new Error("APIエラー");
                     const data = await res.json();
                     
@@ -1335,22 +1618,28 @@ async def index_manager():
                         badgeClass = "badge-downloading";
                         badgeText = `DL中 ${item.progress}%`;
                         isDisable = "disabled";
+                    } else if (item.status === "extracting") {
+                        badgeClass = "badge-downloading";
+                        badgeText = "展開中...";
+                        isDisable = "disabled";
                     } else if (item.installed) {
                         badgeClass = "badge-installed";
                         badgeText = "インストール済";
                     }
 
+                    const displayName = currentType === "astrometry" ? `index-${item.num}` : `${item.num} Star DB`;
+
                     card.innerHTML = `
                         <input type="checkbox" id="chk-${item.num}" ${isChecked} ${isDisable} onchange="toggleIndex('${item.num}', this.checked)">
                         <div class="index-info">
                             <div class="index-name">
-                                index-${item.num}
+                                ${displayName}
                                 <span class="status-badge ${badgeClass}">${badgeText}</span>
                             </div>
                             <div class="fov-tag">対応視野角: <strong>${item.fov}</strong></div>
                             <div class="size-tag">サイズ: ${item.installed ? (item.actual_size_desc || item.size_desc) : item.size_desc}</div>
                             
-                            <div class="progress-bar-container" id="progress-container-${item.num}" style="display: ${item.status === 'downloading' ? 'block' : 'none'}">
+                            <div class="progress-bar-container" id="progress-container-${item.num}" style="display: ${(item.status === 'downloading' || item.status === 'extracting') ? 'block' : 'none'}">
                                 <div class="progress-bar-fill" id="progress-fill-${item.num}" style="width: ${item.progress}%"></div>
                             </div>
                         </div>
@@ -1360,13 +1649,16 @@ async def index_manager():
             }
 
             async function toggleIndex(num, check) {
+                const apiPrefix = currentType === "astrometry" ? "" : "_astap";
+                const displayLabel = currentType === "astrometry" ? `index-${num}` : `${num} Star DB`;
+
                 if (check) {
-                    // ダウンロード開始
                     try {
-                        const res = await fetch("/api/download_index", {
+                        const bodyData = currentType === "astrometry" ? { path: currentPath, num: num } : { num: num };
+                        const res = await fetch(`/api/download${apiPrefix}_index`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ path: currentPath, num: num })
+                            body: JSON.stringify(bodyData)
                         });
                         if (res.ok) {
                             startPolling();
@@ -1376,16 +1668,16 @@ async def index_manager():
                         scanDirectory();
                     }
                 } else {
-                    // 削除
-                    if (!confirm(`インデックス index-${num} を削除してよろしいですか？`)) {
+                    if (!confirm(`インデックス ${displayLabel} を削除してよろしいですか？`)) {
                         document.getElementById(`chk-${num}`).checked = true;
                         return;
                     }
                     try {
-                        const res = await fetch("/api/delete_index", {
+                        const bodyData = currentType === "astrometry" ? { path: currentPath, num: num } : { num: num };
+                        const res = await fetch(`/api/delete${apiPrefix}_index`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ path: currentPath, num: num })
+                            body: JSON.stringify(bodyData)
                         });
                         if (res.ok) {
                             scanDirectory();
@@ -1398,16 +1690,24 @@ async def index_manager():
             }
 
             function checkRunningDownloads(indices) {
-                const downloading = indices.find(item => item.status === "downloading");
+                const active = indices.find(item => item.status === "downloading" || item.status === "extracting");
                 const globalProgress = document.getElementById("global-progress");
+                const stopBtn = document.getElementById("global-stop-btn");
+                const progressTitle = document.getElementById("global-progress-title");
                 
-                if (downloading) {
-                    downloadingNum = downloading.num;
+                if (active) {
+                    downloadingNum = active.num;
                     globalProgress.style.display = "flex";
-                    document.getElementById("global-progress-title").textContent = `index-${downloading.num} をダウンロード中... (${downloading.progress}%)`;
-                    document.getElementById("global-progress-fill").style.width = downloading.progress + "%";
-                    
-                    document.getElementById("global-stop-btn").onclick = () => stopDownload(downloading.num);
+                    if (active.status === "extracting") {
+                        progressTitle.textContent = `${currentType === 'astrometry' ? 'index-' : ''}${active.num} 展開中...`;
+                        document.getElementById("global-progress-fill").style.width = "100%";
+                        stopBtn.style.display = "none";
+                    } else {
+                        progressTitle.textContent = `${currentType === 'astrometry' ? 'index-' : ''}${active.num} をダウンロード中... (${active.progress}%)`;
+                        document.getElementById("global-progress-fill").style.width = active.progress + "%";
+                        stopBtn.style.display = "block";
+                        stopBtn.onclick = () => stopDownload(active.num);
+                    }
                     startPolling();
                 } else {
                     globalProgress.style.display = "none";
@@ -1416,12 +1716,14 @@ async def index_manager():
             }
 
             async function stopDownload(num) {
-                if (!confirm("ダウンロードを停止しますか？")) return;
+                if (!confirm("ダウンロードを一時停止（キャンセル）しますか？")) return;
+                const apiPrefix = currentType === "astrometry" ? "" : "_astap";
                 try {
-                    await fetch("/api/cancel_download", {
+                    const bodyData = currentType === "astrometry" ? { path: currentPath, num: num } : { num: num };
+                    await fetch(`/api/cancel${apiPrefix}_download`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ path: currentPath, num: num })
+                        body: JSON.stringify(bodyData)
                     });
                     scanDirectory();
                 } catch (e) {
@@ -1433,22 +1735,38 @@ async def index_manager():
                 if (pollTimer) return;
                 pollTimer = setInterval(async () => {
                     try {
-                        const res = await fetch(`/api/scanned_indices?path=${encodeURIComponent(currentPath)}`);
+                        let url = "";
+                        if (currentType === "astrometry") {
+                            url = `/api/scanned_indices?path=${encodeURIComponent(currentPath)}`;
+                        } else {
+                            url = `/api/scanned_astap_indices`;
+                        }
+                        const res = await fetch(url);
                         if (!res.ok) return;
                         const data = await res.json();
                         
                         renderIndexList(data.indices);
                         
-                        const downloading = data.indices.find(item => item.status === "downloading");
-                        if (downloading) {
-                            document.getElementById("global-progress").style.display = "flex";
-                            document.getElementById("global-progress-title").textContent = `index-${downloading.num} をダウンロード中... (${downloading.progress}%)`;
-                            document.getElementById("global-progress-fill").style.width = downloading.progress + "%";
+                        const active = data.indices.find(item => item.status === "downloading" || item.status === "extracting");
+                        const globalProgress = document.getElementById("global-progress");
+                        const stopBtn = document.getElementById("global-stop-btn");
+                        const progressTitle = document.getElementById("global-progress-title");
+
+                        if (active) {
+                            globalProgress.style.display = "flex";
+                            if (active.status === "extracting") {
+                                progressTitle.textContent = `${currentType === 'astrometry' ? 'index-' : ''}${active.num} 展開中...`;
+                                document.getElementById("global-progress-fill").style.width = "100%";
+                                stopBtn.style.display = "none";
+                            } else {
+                                progressTitle.textContent = `${currentType === 'astrometry' ? 'index-' : ''}${active.num} をダウンロード中... (${active.progress}%)`;
+                                document.getElementById("global-progress-fill").style.width = active.progress + "%";
+                                stopBtn.style.display = "block";
+                            }
                         } else {
-                            // ダウンロードが完了または終了した
                             clearInterval(pollTimer);
                             pollTimer = null;
-                            document.getElementById("global-progress").style.display = "none";
+                            globalProgress.style.display = "none";
                             scanDirectory();
                         }
                     } catch (e) {
