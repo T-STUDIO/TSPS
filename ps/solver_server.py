@@ -669,14 +669,14 @@ INDEX_METADATA = [
 ]
 
 ASTAP_INDEX_METADATA = [
-    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "3.4 GiB", "pattern": "d80*.astap", "url": "https://www.hnsky.org/d80_v18.zip", "is_zip": True},
-    {"num": "D50", "fov": "0.10° - 2.0°", "size_desc": "1.2 GiB", "pattern": "d50*.astap", "url": "https://www.hnsky.org/d50_v18.zip", "is_zip": True},
-    {"num": "D20", "fov": "0.05° - 0.5°", "size_desc": "4.5 GiB", "pattern": "d20*.astap", "url": "https://www.hnsky.org/d20_v18.zip", "is_zip": True},
-    {"num": "D05", "fov": "0.01° - 0.1°", "size_desc": "18 GiB", "pattern": "d05*.astap", "url": "https://www.hnsky.org/d05_v18.zip", "is_zip": True},
-    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MiB", "pattern": "v50*.astap", "url": "https://www.hnsky.org/v50_v18.zip", "is_zip": True},
-    {"num": "V05", "fov": "0.2° - 5.0°", "size_desc": "1.4 GiB", "pattern": "v05*.astap", "url": "https://www.hnsky.org/v05_v18.zip", "is_zip": True},
-    {"num": "W08", "fov": "8° - 120°", "size_desc": "23 MiB", "pattern": "w08*.astap", "url": "https://www.hnsky.org/w08_v18.zip", "is_zip": True},
-    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MiB", "pattern": "hyperleda.astap", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
+    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "3.4 GiB", "pattern": "d80_*.[0-9]*", "url": "https://www.hnsky.org/d80_v18.zip", "is_zip": True},
+    {"num": "D50", "fov": "0.10° - 2.0°", "size_desc": "1.2 GiB", "pattern": "d50_*.[0-9]*", "url": "https://www.hnsky.org/d50_v18.zip", "is_zip": True},
+    {"num": "D20", "fov": "0.05° - 0.5°", "size_desc": "4.5 GiB", "pattern": "d20_*.[0-9]*", "url": "https://www.hnsky.org/d20_v18.zip", "is_zip": True},
+    {"num": "D05", "fov": "0.01° - 0.1°", "size_desc": "18 GiB", "pattern": "d05_*.[0-9]*", "url": "https://www.hnsky.org/d05_v18.zip", "is_zip": True},
+    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MiB", "pattern": "v50_*.[0-9]*", "url": "https://www.hnsky.org/v50_v18.zip", "is_zip": True},
+    {"num": "V05", "fov": "0.2° - 5.0°", "size_desc": "1.4 GiB", "pattern": "v05_*.[0-9]*", "url": "https://www.hnsky.org/v05_v18.zip", "is_zip": True},
+    {"num": "W08", "fov": "8° - 120°", "size_desc": "23 MiB", "pattern": "w08_*.[0-9]*", "url": "https://www.hnsky.org/w08_v18.zip", "is_zip": True},
+    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MiB", "pattern": "hyperleda.*", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
 ]
 
 ASTAP_DOWNLOAD_TASKS = {}
@@ -968,7 +968,7 @@ async def api_scanned_astap_indices():
         actual_files = []
         if exists:
             search_pattern = os.path.join(ASTAP_DIR, pattern)
-            actual_files = glob.glob(search_pattern)
+            actual_files = [f for f in glob.glob(search_pattern) if not f.endswith(".zip") and not f.endswith(".tmp") and not f.endswith(".download")]
             
         installed = len(actual_files) > 0
         actual_size_desc = ""
