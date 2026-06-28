@@ -1102,18 +1102,21 @@ async def index_manager():
             <!-- 保存先選択 -->
             <div class="form-group">
                 <label for="dir-select">💾 保存先ディレクトリ</label>
-                <div style="display: flex; gap: 10px;">
+                <div style="display: flex; gap: 10px; margin-bottom: 8px;">
                     <select id="dir-select" onchange="onDirChanged()" style="flex: 1;">
-                        <option value="/home/tstudio/.local/share/kstars/astrometry">/home/tstudio/.local/share/kstars/astrometry (KStarsデフォルト)</option>
-                        <option value="/usr/share/astrometry">/usr/share/astrometry (システム共有)</option>
-                        <option value="custom">-- カスタムディレクトリを登録する --</option>
+                        <!-- JavaScriptで動的に生成されます -->
                     </select>
-                    <button id="remove-dir-btn" class="btn" style="background: var(--accent-red); color: white; display: none;" onclick="removeCurrentDir()">Remove</button>
                 </div>
                 
-                <div id="custom-dir-container" class="custom-dir-box" style="display: none;">
-                    <input type="text" id="custom-dir-input" placeholder="例: /path/to/custom/astrometry/data">
-                    <button class="btn btn-blue" onclick="addCustomDir()">選択・追加</button>
+                <div style="display: flex; flex-direction: column; gap: 8px; background: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+                    <div style="font-size: 0.85rem; color: var(--text-muted); font-weight: bold;">現在のパス（編集して変更・登録・削除が可能です）</div>
+                    <input type="text" id="dir-path-input" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-main); font-size: 0.95rem; box-sizing: border-box;" placeholder="/path/to/astrometry/data">
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button class="btn btn-blue" onclick="applyAndSaveDir()" style="flex: 1; min-width: 120px;">更新・適用</button>
+                        <button class="btn" onclick="addNewDir()" style="background: #10b981; color: white; flex: 1; min-width: 120px;">新規追加</button>
+                        <button id="remove-dir-btn" class="btn" style="background: var(--accent-red); color: white; flex: 1; min-width: 80px;" onclick="removeCurrentDir()">削除</button>
+                        <button class="btn" style="background: #4b5563; color: white; flex: 1; min-width: 120px;" onclick="resetToDefaultDirs()">初期値に戻す</button>
+                    </div>
                 </div>
             </div>
 
@@ -1146,124 +1149,142 @@ async def index_manager():
         </div>
 
         <script>
-            let currentPath = "/home/tstudio/.local/share/kstars/astrometry";
+            let currentPath = "";
             let pollTimer = null;
             let downloadingNum = null;
 
-            function init() {
-                // ローカルストレージからカスタムディレクトリを復元
-                const savedCustoms = JSON.parse(localStorage.getItem("custom_dirs") || "[]");
-                const select = document.getElementById("dir-select");
-                savedCustoms.forEach(path => {
-                    const opt = document.createElement("option");
-                    opt.value = path;
-                    opt.textContent = path + " (カスタム)";
-                    // customの直前に挿入
-                    select.insertBefore(opt, select.lastElementChild);
-                });
+            const DEFAULT_DIRS = [
+                "/home/tstudio/.local/share/kstars/astrometry",
+                "/usr/share/astrometry"
+            ];
 
-                // 初期パスを設定
-                const savedLastPath = localStorage.getItem("last_index_path");
-                if (savedLastPath) {
-                    if (Array.from(select.options).some(o => o.value === savedLastPath)) {
-                        select.value = savedLastPath;
-                        currentPath = savedLastPath;
+            function getSavedDirs() {
+                const saved = localStorage.getItem("index_dirs");
+                if (saved) {
+                    try {
+                        return JSON.parse(saved);
+                    } catch (e) {
+                        return [...DEFAULT_DIRS];
                     }
                 }
+                return [...DEFAULT_DIRS];
+            }
+
+            function saveDirs(dirs) {
+                localStorage.setItem("index_dirs", JSON.stringify(dirs));
+            }
+
+            function renderDirSelect(selectedPath) {
+                const select = document.getElementById("dir-select");
+                select.innerHTML = "";
+                const dirs = getSavedDirs();
                 
-                onDirChanged();
+                dirs.forEach(path => {
+                    const opt = document.createElement("option");
+                    opt.value = path;
+                    opt.textContent = path;
+                    select.appendChild(opt);
+                });
+
+                if (selectedPath && dirs.includes(selectedPath)) {
+                    select.value = selectedPath;
+                } else if (dirs.length > 0) {
+                    select.value = dirs[0];
+                }
+                
+                currentPath = select.value || "";
+                document.getElementById("dir-path-input").value = currentPath;
+                localStorage.setItem("last_index_path", currentPath);
+            }
+
+            function init() {
+                const savedLastPath = localStorage.getItem("last_index_path");
+                renderDirSelect(savedLastPath);
+                
+                if (currentPath) {
+                    scanDirectory();
+                }
             }
 
             function onDirChanged() {
                 const select = document.getElementById("dir-select");
-                const customBox = document.getElementById("custom-dir-container");
-                const removeBtn = document.getElementById("remove-dir-btn");
-                
-                const defaultPaths = [
-                    "/home/tstudio/.local/share/kstars/astrometry",
-                    "/usr/share/astrometry"
-                ];
+                currentPath = select.value;
+                document.getElementById("dir-path-input").value = currentPath;
+                localStorage.setItem("last_index_path", currentPath);
+                scanDirectory();
+            }
 
-                if (select.value === "custom") {
-                    customBox.style.display = "flex";
-                    removeBtn.style.display = "none";
-                } else {
-                    customBox.style.display = "none";
-                    currentPath = select.value;
-                    localStorage.setItem("last_index_path", currentPath);
-                    
-                    if (!defaultPaths.includes(currentPath)) {
-                        removeBtn.style.display = "block";
-                    } else {
-                        removeBtn.style.display = "none";
-                    }
-                    
-                    scanDirectory();
+            function applyAndSaveDir() {
+                const select = document.getElementById("dir-select");
+                const oldPath = select.value;
+                const newPath = document.getElementById("dir-path-input").value.trim();
+                
+                if (!newPath) {
+                    alert("パスを入力してください。");
+                    return;
                 }
+
+                let dirs = getSavedDirs();
+                const index = dirs.indexOf(oldPath);
+                
+                if (index !== -1) {
+                    dirs[index] = newPath;
+                } else {
+                    dirs.push(newPath);
+                }
+
+                saveDirs(dirs);
+                renderDirSelect(newPath);
+                scanDirectory();
+            }
+
+            function addNewDir() {
+                const newPath = document.getElementById("dir-path-input").value.trim();
+                if (!newPath) {
+                    alert("追加するパスを入力してください。");
+                    return;
+                }
+
+                let dirs = getSavedDirs();
+                if (dirs.includes(newPath)) {
+                    alert("このパスは既にリストに存在します。");
+                    return;
+                }
+
+                dirs.push(newPath);
+                saveDirs(dirs);
+                renderDirSelect(newPath);
+                scanDirectory();
             }
 
             function removeCurrentDir() {
                 const select = document.getElementById("dir-select");
                 const pathToRemove = select.value;
-                
-                if (!pathToRemove || pathToRemove === "custom") return;
-                
-                const defaultPaths = [
-                    "/home/tstudio/.local/share/kstars/astrometry",
-                    "/usr/share/astrometry"
-                ];
-                
-                if (defaultPaths.includes(pathToRemove)) {
-                    alert("デフォルトのディレクトリは削除できません。");
+                if (!pathToRemove) return;
+
+                if (!confirm(`ディレクトリ "${pathToRemove}" を管理リストから削除しますか？`)) {
                     return;
                 }
-                
-                if (!confirm(`カスタムディレクトリ "${pathToRemove}" を管理リストから削除しますか？`)) {
-                    return;
+
+                let dirs = getSavedDirs();
+                dirs = dirs.filter(path => path !== pathToRemove);
+                saveDirs(dirs);
+
+                renderDirSelect(dirs.length > 0 ? dirs[0] : "");
+                if (currentPath) {
+                    scanDirectory();
+                } else {
+                    document.getElementById("status-panel").style.display = "none";
+                    document.getElementById("index-list").innerHTML = "<p style='color: var(--text-muted); text-align: center; padding: 20px;'>保存先ディレクトリを登録または選択してください。</p>";
                 }
-                
-                // localStorageから削除
-                let savedCustoms = JSON.parse(localStorage.getItem("custom_dirs") || "[]");
-                savedCustoms = savedCustoms.filter(path => path !== pathToRemove);
-                localStorage.setItem("custom_dirs", JSON.stringify(savedCustoms));
-                
-                // セレクトボックスからオプションを削除
-                for (let i = 0; i < select.options.length; i++) {
-                    if (select.options[i].value === pathToRemove) {
-                        select.remove(i);
-                        break;
-                    }
-                }
-                
-                // デフォルトに戻す
-                select.value = "/home/tstudio/.local/share/kstars/astrometry";
-                onDirChanged();
             }
 
-            function addCustomDir() {
-                const input = document.getElementById("custom-dir-input");
-                const path = input.value.trim();
-                if (!path) return;
-
-                const select = document.getElementById("dir-select");
-                // 既に存在するか
-                if (!Array.from(select.options).some(o => o.value === path)) {
-                    const opt = document.createElement("option");
-                    opt.value = path;
-                    opt.textContent = path + " (カスタム)";
-                    select.insertBefore(opt, select.lastElementChild);
-                    
-                    // 保存
-                    const savedCustoms = JSON.parse(localStorage.getItem("custom_dirs") || "[]");
-                    savedCustoms.push(path);
-                    localStorage.setItem("custom_dirs", JSON.stringify(savedCustoms));
+            function resetToDefaultDirs() {
+                if (!confirm("保存ディレクトリリストをデフォルトの初期設定に戻しますか？（追加・編集したカスタムパスは消去されます）")) {
+                    return;
                 }
-
-                select.value = path;
-                document.getElementById("custom-dir-container").style.display = "none";
-                currentPath = path;
-                localStorage.setItem("last_index_path", currentPath);
-                input.value = "";
+                localStorage.removeItem("index_dirs");
+                renderDirSelect(DEFAULT_DIRS[0]);
                 scanDirectory();
             }
 
