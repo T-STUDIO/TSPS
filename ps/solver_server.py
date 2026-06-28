@@ -676,7 +676,7 @@ ASTAP_INDEX_METADATA = [
     {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MiB", "pattern": "v50_*.290", "url": "https://www.hnsky.org/v50_v18.zip", "is_zip": True},
     {"num": "V05", "fov": "0.2° - 5.0°", "size_desc": "1.4 GiB", "pattern": "v05_*.290", "url": "https://www.hnsky.org/v05_v18.zip", "is_zip": True},
     {"num": "W08", "fov": "8° - 120°", "size_desc": "23 MiB", "pattern": "w08_*.290", "url": "https://www.hnsky.org/w08_v18.zip", "is_zip": True},
-    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MiB", "pattern": "hyperleda.astap", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
+    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MiB", "pattern": "hyperleda.*", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
 ]
 
 ASTAP_DOWNLOAD_TASKS = {}
@@ -718,15 +718,31 @@ def astap_download_worker(num, url, pattern, is_zip):
                 if is_zip:
                     ASTAP_DOWNLOAD_TASKS[key]["status"] = "extracting"
                     try:
+                        logger.info(f"Extracting {target_filepath} to {ASTAP_DIR} ...")
+                        extracted_files = []
                         with zipfile.ZipFile(target_filepath, 'r') as zip_ref:
-                            zip_ref.extractall(ASTAP_DIR)
-                        extracted_files = glob.glob(os.path.join(ASTAP_DIR, pattern))
+                            for member in zip_ref.infolist():
+                                if not member.is_dir():
+                                    filename = os.path.basename(member.filename).lower()
+                                    if filename:
+                                        dest_path = os.path.join(ASTAP_DIR, filename)
+                                        logger.info(f"Extracting member {member.filename} -> {dest_path}")
+                                        with zip_ref.open(member) as source, open(dest_path, "wb") as target:
+                                            target.write(source.read())
+                                        extracted_files.append(dest_path)
+                                        
                         for ef in extracted_files:
-                            try: os.chmod(ef, 0o777)
-                            except: pass
+                            try:
+                                os.chmod(ef, 0o777)
+                            except Exception as ce:
+                                logger.warning(f"Failed to chmod extracted file {ef}: {ce}")
+                    except Exception as ze:
+                        logger.error(f"Error during extraction of {target_filepath}: {ze}")
+                        raise ze
                     finally:
                         if os.path.exists(target_filepath):
-                            os.remove(target_filepath)
+                            try: os.remove(target_filepath)
+                            except: pass
                 else:
                     try:
                         os.chmod(target_filepath, 0o777)
@@ -971,8 +987,16 @@ async def api_scanned_astap_indices():
         
         actual_files = []
         if exists:
-            search_pattern = os.path.join(ASTAP_DIR, pattern)
-            actual_files = [f for f in glob.glob(search_pattern) if not f.endswith(".zip") and not f.endswith(".tmp") and not f.endswith(".download")]
+            import fnmatch
+            try:
+                all_files = os.listdir(ASTAP_DIR)
+                for f in all_files:
+                    if f.endswith(".zip") or f.endswith(".tmp") or f.endswith(".download"):
+                        continue
+                    if fnmatch.fnmatch(f.lower(), pattern.lower()):
+                        actual_files.append(os.path.join(ASTAP_DIR, f))
+            except Exception as e:
+                logger.error(f"Error filtering files in ASTAP_DIR for {num}: {e}")
             
         installed = len(actual_files) > 0
         actual_size_desc = ""
