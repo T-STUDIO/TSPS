@@ -1154,7 +1154,7 @@ async def index_manager():
             let downloadingNum = null;
 
             const DEFAULT_DIRS = [
-                "/home/tstudio/.local/share/kstars/astrometry",
+                "/home/astrpi64/.local/share/kstars/astrometry",
                 "/usr/share/astrometry"
             ];
 
