@@ -633,50 +633,54 @@ def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None, is_astap=Fals
         logger.error(f"WCS Parse Error: {e}")
         return None
 
-def get_file_size_desc(filepath):
+def get_file_size_desc(filepath_or_list):
     try:
-        size = os.path.getsize(filepath)
-        if size >= 1024**3:
-            return f"{size / (1024**3):.1f} GiB"
-        elif size >= 1024**2:
-            return f"{size / (1024**2):.1f} MiB"
+        if isinstance(filepath_or_list, list):
+            size = sum(os.path.getsize(f) for f in filepath_or_list if os.path.exists(f))
         else:
-            return f"{size / 1024:.1f} KiB"
+            size = os.path.getsize(filepath_or_list)
+        if size >= 1024**3:
+            return f"{size / (1024**3):.1f} GB"
+        elif size >= 1024**2:
+            return f"{size / (1024**2):.1f} MB"
+        else:
+            return f"{size / 1024:.1f} KB"
     except:
         return "0 B"
 
 INDEX_METADATA = [
-    {"num": "4119", "fov": "23.3° - 33.3°", "size_desc": "141 KiB", "pattern": "index-4119.fits", "url": "http://data.astrometry.net/4100/index-4119.fits"},
-    {"num": "4118", "fov": "16.7° - 23.3°", "size_desc": "183 KiB", "pattern": "index-4118.fits", "url": "http://data.astrometry.net/4100/index-4118.fits"},
-    {"num": "4117", "fov": "11.3° - 16.7°", "size_desc": "242 KiB", "pattern": "index-4117.fits", "url": "http://data.astrometry.net/4100/index-4117.fits"},
-    {"num": "4116", "fov": "8.0° - 11.3°", "size_desc": "400 KiB", "pattern": "index-4116.fits", "url": "http://data.astrometry.net/4100/index-4116.fits"},
-    {"num": "4115", "fov": "5.7° - 8.0°", "size_desc": "723 KiB", "pattern": "index-4115.fits", "url": "http://data.astrometry.net/4100/index-4115.fits"},
-    {"num": "4114", "fov": "4.0° - 5.7°", "size_desc": "1.4 MiB", "pattern": "index-4114.fits", "url": "http://data.astrometry.net/4100/index-4114.fits"},
-    {"num": "4113", "fov": "2.8° - 4.0°", "size_desc": "2.7 MiB", "pattern": "index-4113.fits", "url": "http://data.astrometry.net/4100/index-4113.fits"},
-    {"num": "4112", "fov": "2.0° - 2.8°", "size_desc": "5.1 MiB", "pattern": "index-4112.fits", "url": "http://data.astrometry.net/4100/index-4112.fits"},
-    {"num": "4111", "fov": "1.4° - 2.0°", "size_desc": "9.8 MiB", "pattern": "index-4111.fits", "url": "http://data.astrometry.net/4100/index-4111.fits"},
-    {"num": "4110", "fov": "1.0° - 1.4°", "size_desc": "24 MiB", "pattern": "index-4110.fits", "url": "http://data.astrometry.net/4100/index-4110.fits"},
-    {"num": "4109", "fov": "0.70° - 1.0°", "size_desc": "48 MiB", "pattern": "index-4109.fits", "url": "http://data.astrometry.net/4100/index-4109.fits"},
-    {"num": "4108", "fov": "0.50° - 0.70°", "size_desc": "91 MiB", "pattern": "index-4108.fits", "url": "http://data.astrometry.net/4100/index-4108.fits"},
-    {"num": "4107", "fov": "0.37° - 0.50°", "size_desc": "158 MiB", "pattern": "index-4107.fits", "url": "http://data.astrometry.net/4100/index-4107.fits"},
-    {"num": "5206", "fov": "0.27° - 0.37°", "size_desc": "294 MiB", "pattern": "index-5206-*.fits", "url": "http://data.astrometry.net/5200/index-5206.fits"},
-    {"num": "5205", "fov": "0.18° - 0.27°", "size_desc": "587 MiB", "pattern": "index-5205-*.fits", "url": "http://data.astrometry.net/5200/index-5205.fits"},
-    {"num": "5204", "fov": "0.13° - 0.18°", "size_desc": "1.2 GiB", "pattern": "index-5204-*.fits", "url": "http://data.astrometry.net/5200/index-5204.fits"},
-    {"num": "5203", "fov": "0.067° - 0.093°", "size_desc": "2.3 GiB", "pattern": "index-5203-*.fits", "url": "http://data.astrometry.net/5200/index-5203.fits"},
-    {"num": "5202", "fov": "0.093° - 0.13°", "size_desc": "4.6 GiB", "pattern": "index-5202-*.fits", "url": "http://data.astrometry.net/5200/index-5202.fits"},
-    {"num": "5201", "fov": "0.033° - 0.047°", "size_desc": "8.9 GiB", "pattern": "index-5201-*.fits", "url": "http://data.astrometry.net/5200/index-5201.fits"},
-    {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GiB", "pattern": "index-5200-*.fits", "url": "http://data.astrometry.net/5200/index-5200.fits"}
+    {"num": "4119", "fov": "23.3° - 33.3°", "size_desc": "141 KB", "pattern": "index-4119.fits", "url": "http://data.astrometry.net/4100/index-4119.fits"},
+    {"num": "4118", "fov": "16.7° - 23.3°", "size_desc": "183 KB", "pattern": "index-4118.fits", "url": "http://data.astrometry.net/4100/index-4118.fits"},
+    {"num": "4117", "fov": "11.3° - 16.7°", "size_desc": "242 KB", "pattern": "index-4117.fits", "url": "http://data.astrometry.net/4100/index-4117.fits"},
+    {"num": "4116", "fov": "8.0° - 11.3°", "size_desc": "400 KB", "pattern": "index-4116.fits", "url": "http://data.astrometry.net/4100/index-4116.fits"},
+    {"num": "4115", "fov": "5.7° - 8.0°", "size_desc": "723 KB", "pattern": "index-4115.fits", "url": "http://data.astrometry.net/4100/index-4115.fits"},
+    {"num": "4114", "fov": "4.0° - 5.7°", "size_desc": "1.4 MB", "pattern": "index-4114.fits", "url": "http://data.astrometry.net/4100/index-4114.fits"},
+    {"num": "4113", "fov": "2.8° - 4.0°", "size_desc": "2.7 MB", "pattern": "index-4113.fits", "url": "http://data.astrometry.net/4100/index-4113.fits"},
+    {"num": "4112", "fov": "2.0° - 2.8°", "size_desc": "5.1 MB", "pattern": "index-4112.fits", "url": "http://data.astrometry.net/4100/index-4112.fits"},
+    {"num": "4111", "fov": "1.4° - 2.0°", "size_desc": "9.8 MB", "pattern": "index-4111.fits", "url": "http://data.astrometry.net/4100/index-4111.fits"},
+    {"num": "4110", "fov": "1.0° - 1.4°", "size_desc": "24 MB", "pattern": "index-4110.fits", "url": "http://data.astrometry.net/4100/index-4110.fits"},
+    {"num": "4109", "fov": "0.70° - 1.0°", "size_desc": "48 MB", "pattern": "index-4109.fits", "url": "http://data.astrometry.net/4100/index-4109.fits"},
+    {"num": "4108", "fov": "0.50° - 0.70°", "size_desc": "91 MB", "pattern": "index-4108.fits", "url": "http://data.astrometry.net/4100/index-4108.fits"},
+    {"num": "4107", "fov": "0.37° - 0.50°", "size_desc": "158 MB", "pattern": "index-4107.fits", "url": "http://data.astrometry.net/4100/index-4107.fits"},
+    {"num": "5206", "fov": "0.27° - 0.37°", "size_desc": "294 MB", "pattern": "index-5206-*.fits", "url": "http://data.astrometry.net/5200/index-5206.fits"},
+    {"num": "5205", "fov": "0.18° - 0.27°", "size_desc": "587 MB", "pattern": "index-5205-*.fits", "url": "http://data.astrometry.net/5200/index-5205.fits"},
+    {"num": "5204", "fov": "0.13° - 0.18°", "size_desc": "1.2 GB", "pattern": "index-5204-*.fits", "url": "http://data.astrometry.net/5200/index-5204.fits"},
+    {"num": "5203", "fov": "0.067° - 0.093°", "size_desc": "2.3 GB", "pattern": "index-5203-*.fits", "url": "http://data.astrometry.net/5200/index-5203.fits"},
+    {"num": "5202", "fov": "0.093° - 0.13°", "size_desc": "4.6 GB", "pattern": "index-5202-*.fits", "url": "http://data.astrometry.net/5200/index-5202.fits"},
+    {"num": "5201", "fov": "0.033° - 0.047°", "size_desc": "8.9 GB", "pattern": "index-5201-*.fits", "url": "http://data.astrometry.net/5200/index-5201.fits"},
+    {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GB", "pattern": "index-5200-*.fits", "url": "http://data.astrometry.net/5200/index-5200.fits"}
 ]
 
 ASTAP_INDEX_METADATA = [
-    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "3.4 GiB", "pattern": "d80_*.500", "url": "https://www.hnsky.org/d80_v18.zip", "is_zip": True},
-    {"num": "D50", "fov": "0.10° - 2.0°", "size_desc": "1.2 GiB", "pattern": "d50_*.500", "url": "https://www.hnsky.org/d50_v18.zip", "is_zip": True},
-    {"num": "D20", "fov": "0.05° - 0.5°", "size_desc": "4.5 GiB", "pattern": "d20_*.1476", "url": "https://www.hnsky.org/d20_v18.zip", "is_zip": True},
-    {"num": "D05", "fov": "0.01° - 0.1°", "size_desc": "18 GiB", "pattern": "d05_*.1476", "url": "https://www.hnsky.org/d05_v18.zip", "is_zip": True},
-    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MiB", "pattern": "v50_*.290", "url": "https://www.hnsky.org/v50_v18.zip", "is_zip": True},
-    {"num": "V05", "fov": "0.2° - 5.0°", "size_desc": "1.4 GiB", "pattern": "v05_*.290", "url": "https://www.hnsky.org/v05_v18.zip", "is_zip": True},
-    {"num": "W08", "fov": "8° - 120°", "size_desc": "23 MiB", "pattern": "w08_*.290", "url": "https://www.hnsky.org/w08_v18.zip", "is_zip": True},
-    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MiB", "pattern": "hyperleda.*", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
+    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://www.hnsky.org/d80_v18.zip", "is_zip": True},
+    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://www.hnsky.org/d50_v18.zip", "is_zip": True},
+    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://www.hnsky.org/v50_v18.zip", "is_zip": True},
+    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://www.hnsky.org/d20_v18.zip", "is_zip": True},
+    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://www.hnsky.org/d05_v18.zip", "is_zip": True},
+    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://www.hnsky.org/v05_v18.zip", "is_zip": True},
+    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://www.hnsky.org/g05_v18.zip", "is_zip": True},
+    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://www.hnsky.org/w08_v18.zip", "is_zip": True},
+    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MB", "pattern": "hyperleda.*", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
 ]
 
 ASTAP_DOWNLOAD_TASKS = {}
@@ -692,7 +696,12 @@ def astap_download_worker(num, url, pattern, is_zip):
             
         import ssl
         context = ssl._create_unverified_context()
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        # リダイレクト時にUser-Agentヘッダーを失わないよう、グローバルopenerをインストール
+        opener = urllib.request.build_opener()
+        opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
+        urllib.request.install_opener(opener)
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         with urllib.request.urlopen(req, context=context) as response:
             total_size = int(response.headers.get('content-length', 0))
             chunk_size = 1024 * 64
@@ -774,7 +783,12 @@ def download_worker(dir_path, num, url, filename):
             
         import ssl
         context = ssl._create_unverified_context()
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        # リダイレクト時にUser-Agentヘッダーを失わないよう、グローバルopenerをインストール
+        opener = urllib.request.build_opener()
+        opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
+        urllib.request.install_opener(opener)
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         with urllib.request.urlopen(req, context=context) as response:
             total_size = int(response.headers.get('content-length', 0))
             chunk_size = 1024 * 64
@@ -845,7 +859,7 @@ async def api_scanned_indices(path: str):
         installed = len(actual_files) > 0
         actual_size_desc = ""
         if installed:
-            actual_size_desc = get_file_size_desc(actual_files[0])
+            actual_size_desc = get_file_size_desc(actual_files)
             
         key = (path, num)
         task = DOWNLOAD_TASKS.get(key, {})
@@ -1001,7 +1015,7 @@ async def api_scanned_astap_indices():
         installed = len(actual_files) > 0
         actual_size_desc = ""
         if installed:
-            actual_size_desc = get_file_size_desc(actual_files[0])
+            actual_size_desc = get_file_size_desc(actual_files)
             
         task = ASTAP_DOWNLOAD_TASKS.get(num, {})
         status = task.get("status", "idle")
@@ -1287,6 +1301,10 @@ async def index_manager():
                 background: rgba(59, 130, 246, 0.2);
                 color: #60a5fa;
                 animation: pulse 1.5s infinite;
+            }
+            .badge-error {
+                background: rgba(239, 68, 68, 0.2);
+                color: #f87171;
             }
             @keyframes pulse {
                 0% { opacity: 0.6; }
@@ -1650,12 +1668,20 @@ async def index_manager():
                         badgeClass = "badge-downloading";
                         badgeText = "展開中...";
                         isDisable = "disabled";
+                    } else if (item.status === "failed") {
+                        badgeClass = "badge-error";
+                        badgeText = "DL失敗";
                     } else if (item.installed) {
                         badgeClass = "badge-installed";
                         badgeText = "インストール済";
                     }
 
                     const displayName = currentType === "astrometry" ? `index-${item.num}` : `${item.num} Star DB`;
+
+                    let errorBlock = "";
+                    if (item.status === "failed" && item.err_msg) {
+                        errorBlock = `<div style="color: #f87171; font-size: 0.8rem; margin-top: 6px; padding: 6px 10px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 4px; word-break: break-all; text-align: left;">エラー: ${item.err_msg}</div>`;
+                    }
 
                     card.innerHTML = `
                         <input type="checkbox" id="chk-${item.num}" ${isChecked} ${isDisable} onchange="toggleIndex('${item.num}', this.checked)">
@@ -1670,6 +1696,7 @@ async def index_manager():
                             <div class="progress-bar-container" id="progress-container-${item.num}" style="display: ${(item.status === 'downloading' || item.status === 'extracting') ? 'block' : 'none'}">
                                 <div class="progress-bar-fill" id="progress-fill-${item.num}" style="width: ${item.progress}%"></div>
                             </div>
+                            ${errorBlock}
                         </div>
                     `;
                     container.appendChild(card);
