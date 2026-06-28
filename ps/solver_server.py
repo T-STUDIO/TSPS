@@ -8,6 +8,8 @@ import logging
 import json
 import urllib.request
 import time
+import glob
+import threading
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from PIL import Image
@@ -630,6 +632,817 @@ def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None, is_astap=Fals
         logger.error(f"WCS Parse Error: {e}")
         return None
 
+def get_file_size_desc(filepath):
+    try:
+        size = os.path.getsize(filepath)
+        if size >= 1024**3:
+            return f"{size / (1024**3):.1f} GiB"
+        elif size >= 1024**2:
+            return f"{size / (1024**2):.1f} MiB"
+        else:
+            return f"{size / 1024:.1f} KiB"
+    except:
+        return "0 B"
+
+INDEX_METADATA = [
+    {"num": "4119", "fov": "23.3° - 33.3°", "size_desc": "141 KiB", "pattern": "index-4119.fits", "url": "http://data.astrometry.net/4100/index-4119.fits"},
+    {"num": "4118", "fov": "16.7° - 23.3°", "size_desc": "183 KiB", "pattern": "index-4118.fits", "url": "http://data.astrometry.net/4100/index-4118.fits"},
+    {"num": "4117", "fov": "11.3° - 16.7°", "size_desc": "242 KiB", "pattern": "index-4117.fits", "url": "http://data.astrometry.net/4100/index-4117.fits"},
+    {"num": "4116", "fov": "8.0° - 11.3°", "size_desc": "400 KiB", "pattern": "index-4116.fits", "url": "http://data.astrometry.net/4100/index-4116.fits"},
+    {"num": "4115", "fov": "5.7° - 8.0°", "size_desc": "723 KiB", "pattern": "index-4115.fits", "url": "http://data.astrometry.net/4100/index-4115.fits"},
+    {"num": "4114", "fov": "4.0° - 5.7°", "size_desc": "1.4 MiB", "pattern": "index-4114.fits", "url": "http://data.astrometry.net/4100/index-4114.fits"},
+    {"num": "4113", "fov": "2.8° - 4.0°", "size_desc": "2.7 MiB", "pattern": "index-4113.fits", "url": "http://data.astrometry.net/4100/index-4113.fits"},
+    {"num": "4112", "fov": "2.0° - 2.8°", "size_desc": "5.1 MiB", "pattern": "index-4112.fits", "url": "http://data.astrometry.net/4100/index-4112.fits"},
+    {"num": "4111", "fov": "1.4° - 2.0°", "size_desc": "9.8 MiB", "pattern": "index-4111.fits", "url": "http://data.astrometry.net/4100/index-4111.fits"},
+    {"num": "4110", "fov": "1.0° - 1.4°", "size_desc": "24 MiB", "pattern": "index-4110.fits", "url": "http://data.astrometry.net/4100/index-4110.fits"},
+    {"num": "4109", "fov": "0.70° - 1.0°", "size_desc": "48 MiB", "pattern": "index-4109.fits", "url": "http://data.astrometry.net/4100/index-4109.fits"},
+    {"num": "4108", "fov": "0.50° - 0.70°", "size_desc": "91 MiB", "pattern": "index-4108.fits", "url": "http://data.astrometry.net/4100/index-4108.fits"},
+    {"num": "4107", "fov": "0.37° - 0.50°", "size_desc": "158 MiB", "pattern": "index-4107.fits", "url": "http://data.astrometry.net/4100/index-4107.fits"},
+    {"num": "5206", "fov": "0.27° - 0.37°", "size_desc": "294 MiB", "pattern": "index-5206-*.fits", "url": "http://data.astrometry.net/5200/index-5206.fits"},
+    {"num": "5205", "fov": "0.18° - 0.27°", "size_desc": "587 MiB", "pattern": "index-5205-*.fits", "url": "http://data.astrometry.net/5200/index-5205.fits"},
+    {"num": "5204", "fov": "0.13° - 0.18°", "size_desc": "1.2 GiB", "pattern": "index-5204-*.fits", "url": "http://data.astrometry.net/5200/index-5204.fits"},
+    {"num": "5203", "fov": "0.067° - 0.093°", "size_desc": "2.3 GiB", "pattern": "index-5203-*.fits", "url": "http://data.astrometry.net/5200/index-5203.fits"},
+    {"num": "5202", "fov": "0.093° - 0.13°", "size_desc": "4.6 GiB", "pattern": "index-5202-*.fits", "url": "http://data.astrometry.net/5200/index-5202.fits"},
+    {"num": "5201", "fov": "0.033° - 0.047°", "size_desc": "8.9 GiB", "pattern": "index-5201-*.fits", "url": "http://data.astrometry.net/5200/index-5201.fits"},
+    {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GiB", "pattern": "index-5200-*.fits", "url": "http://data.astrometry.net/5200/index-5200.fits"}
+]
+
+DOWNLOAD_TASKS = {}
+
+def download_worker(dir_path, num, url, filename):
+    key = (dir_path, num)
+    download_filename = url.split('/')[-1]
+    target_filepath = os.path.join(dir_path, download_filename)
+    try:
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+            
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            total_size = int(response.headers.get('content-length', 0))
+            chunk_size = 1024 * 64
+            downloaded = 0
+            
+            with open(target_filepath, 'wb') as f:
+                while True:
+                    if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                        DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                        break
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = int((downloaded / total_size) * 100)
+                        DOWNLOAD_TASKS[key]["progress"] = progress
+                    else:
+                        DOWNLOAD_TASKS[key]["progress"] = 50
+                        
+            if DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+                try:
+                    os.chmod(target_filepath, 0o777)
+                except Exception as pe:
+                    logger.warning(f"Failed to chmod file {target_filepath}: {pe}")
+                DOWNLOAD_TASKS[key]["status"] = "completed"
+                DOWNLOAD_TASKS[key]["progress"] = 100
+            else:
+                if os.path.exists(target_filepath):
+                    os.remove(target_filepath)
+    except Exception as e:
+        logger.error(f"Download Error for {filename}: {e}")
+        DOWNLOAD_TASKS[key]["status"] = "failed"
+        DOWNLOAD_TASKS[key]["err_msg"] = str(e)
+        if os.path.exists(target_filepath):
+            try: os.remove(target_filepath)
+            except: pass
+
+@app.get("/api/scanned_indices")
+async def api_scanned_indices(path: str):
+    exists = os.path.exists(path)
+    writable = False
+    err_msg = ""
+    if exists:
+        try:
+            test_file = os.path.join(path, ".test_write_permission")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            writable = True
+        except Exception as e:
+            writable = False
+            err_msg = str(e)
+    else:
+        err_msg = "ディレクトリが存在しません"
+
+    scanned = []
+    for item in INDEX_METADATA:
+        pattern = item["pattern"]
+        num = item["num"]
+        
+        actual_files = []
+        if exists:
+            search_pattern = os.path.join(path, pattern)
+            actual_files = glob.glob(search_pattern)
+            
+        installed = len(actual_files) > 0
+        actual_size_desc = ""
+        if installed:
+            actual_size_desc = get_file_size_desc(actual_files[0])
+            
+        key = (path, num)
+        task = DOWNLOAD_TASKS.get(key, {})
+        status = task.get("status", "idle")
+        progress = task.get("progress", 0)
+        task_err = task.get("err_msg", "")
+        
+        if status == "completed" and not installed:
+            status = "idle"
+            progress = 0
+
+        scanned.append({
+            "num": num,
+            "fov": item["fov"],
+            "size_desc": item["size_desc"],
+            "pattern": pattern,
+            "installed": installed,
+            "actual_size_desc": actual_size_desc,
+            "status": status,
+            "progress": progress,
+            "err_msg": task_err
+        })
+
+    return {
+        "path": path,
+        "exists": exists,
+        "writable": writable,
+        "err_msg": err_msg,
+        "indices": scanned
+    }
+
+@app.post("/api/download_index")
+async def api_download_index(request: Request):
+    data = await request.json()
+    path = data.get("path")
+    num = data.get("num")
+    
+    if not path or not num:
+        raise HTTPException(status_code=400, detail="Missing path or num")
+        
+    meta = next((x for x in INDEX_METADATA if x["num"] == num), None)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Index meta not found")
+        
+    key = (path, num)
+    if DOWNLOAD_TASKS.get(key, {}).get("status") == "downloading":
+        return {"status": "already_downloading"}
+        
+    DOWNLOAD_TASKS[key] = {
+        "status": "downloading",
+        "progress": 0,
+        "stop": False,
+        "thread": None
+    }
+    
+    t = threading.Thread(
+        target=download_worker,
+        args=(path, num, meta["url"], meta["pattern"]),
+        daemon=True
+    )
+    DOWNLOAD_TASKS[key]["thread"] = t
+    t.start()
+    return {"status": "started"}
+
+@app.post("/api/cancel_download")
+async def api_cancel_download(request: Request):
+    data = await request.json()
+    path = data.get("path")
+    num = data.get("num")
+    key = (path, num)
+    if key in DOWNLOAD_TASKS:
+        DOWNLOAD_TASKS[key]["stop"] = True
+        return {"status": "cancelled_signal_sent"}
+    return {"status": "not_running"}
+
+@app.post("/api/delete_index")
+async def api_delete_index(request: Request):
+    data = await request.json()
+    path = data.get("path")
+    num = data.get("num")
+    
+    if not path or not num:
+        raise HTTPException(status_code=400, detail="Missing path or num")
+        
+    meta = next((x for x in INDEX_METADATA if x["num"] == num), None)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Index meta not found")
+        
+    pattern = meta["pattern"]
+    search_pattern = os.path.join(path, pattern)
+    files = glob.glob(search_pattern)
+    
+    deleted_count = 0
+    errors = []
+    for f in files:
+        try:
+            os.remove(f)
+            deleted_count += 1
+        except Exception as e:
+            errors.append(str(e))
+            
+    key = (path, num)
+    if key in DOWNLOAD_TASKS:
+        DOWNLOAD_TASKS.pop(key, None)
+        
+    return {
+        "status": "completed",
+        "deleted_count": deleted_count,
+        "errors": errors
+    }
+
+@app.get("/index_manager", response_class=HTMLResponse)
+async def index_manager():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="ja">
+    <head>
+        <meta charset="UTF-8">
+        <title>📁 Index Manager - TSPS</title>
+        <style>
+            :root {
+                --bg-dark: #0f172a;
+                --bg-card: #1e293b;
+                --text-main: #f1f5f9;
+                --text-muted: #94a3b8;
+                --accent-blue: #3b82f6;
+                --accent-red: #ef4444;
+                --accent-green: #10b981;
+                --border-color: #334155;
+            }
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: var(--bg-dark);
+                color: var(--text-main);
+                margin: 0;
+                padding: 40px 20px;
+            }
+            .container {
+                max-width: 900px;
+                margin: 0 auto;
+                background: var(--bg-card);
+                padding: 35px;
+                border-radius: 12px;
+                border: 1px solid var(--border-color);
+                box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            }
+            h2 {
+                margin-top: 0;
+                font-size: 1.8rem;
+                border-bottom: 2px solid var(--accent-blue);
+                padding-bottom: 12px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .desc {
+                color: var(--text-muted);
+                font-size: 0.95rem;
+                line-height: 1.6;
+                margin-bottom: 25px;
+            }
+            .form-group {
+                margin-bottom: 20px;
+            }
+            label {
+                display: block;
+                font-weight: bold;
+                margin-bottom: 8px;
+                color: var(--text-main);
+            }
+            select, input[type="text"] {
+                width: 100%;
+                padding: 10px 12px;
+                background: #0f172a;
+                border: 1px solid var(--border-color);
+                border-radius: 6px;
+                color: var(--text-main);
+                font-size: 0.95rem;
+                box-sizing: border-box;
+            }
+            select:focus, input[type="text"]:focus {
+                outline: none;
+                border-color: var(--accent-blue);
+            }
+            .custom-dir-box {
+                display: flex;
+                gap: 10px;
+                margin-top: 8px;
+            }
+            .custom-dir-box input {
+                flex: 1;
+            }
+            .btn {
+                padding: 10px 20px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: bold;
+                transition: background 0.2s;
+            }
+            .btn-blue {
+                background: var(--accent-blue);
+                color: white;
+            }
+            .btn-blue:hover {
+                background: #2563eb;
+            }
+            .status-panel {
+                padding: 14px;
+                border-radius: 8px;
+                margin-bottom: 25px;
+                border: 1px solid transparent;
+                display: none;
+            }
+            .status-ok {
+                background: rgba(16, 185, 129, 0.1);
+                border-color: var(--accent-green);
+                color: #34d399;
+            }
+            .status-error {
+                background: rgba(239, 68, 68, 0.1);
+                border-color: var(--accent-red);
+                color: #f87171;
+            }
+            .index-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 15px;
+                margin-top: 20px;
+            }
+            @media (max-width: 768px) {
+                .index-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+            .index-card {
+                background: #0f172a;
+                border: 1px solid var(--border-color);
+                padding: 15px;
+                border-radius: 8px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                position: relative;
+            }
+            .index-card:hover {
+                border-color: #475569;
+            }
+            .index-card input[type="checkbox"] {
+                width: 18px;
+                height: 18px;
+                cursor: pointer;
+            }
+            .index-info {
+                flex: 1;
+            }
+            .index-name {
+                font-weight: bold;
+                font-size: 0.95rem;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .fov-tag {
+                font-size: 0.8rem;
+                color: var(--text-muted);
+                margin-top: 4px;
+            }
+            .size-tag {
+                font-size: 0.8rem;
+                color: var(--accent-blue);
+                font-weight: bold;
+                margin-top: 2px;
+            }
+            .status-badge {
+                font-size: 0.75rem;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            .badge-installed {
+                background: rgba(16, 185, 129, 0.2);
+                color: #34d399;
+            }
+            .badge-missing {
+                background: rgba(148, 163, 184, 0.15);
+                color: var(--text-muted);
+            }
+            .badge-downloading {
+                background: rgba(59, 130, 246, 0.2);
+                color: #60a5fa;
+                animation: pulse 1.5s infinite;
+            }
+            @keyframes pulse {
+                0% { opacity: 0.6; }
+                50% { opacity: 1; }
+                100% { opacity: 0.6; }
+            }
+            .progress-bar-container {
+                width: 100%;
+                background: #1e293b;
+                height: 6px;
+                border-radius: 3px;
+                margin-top: 8px;
+                overflow: hidden;
+                display: none;
+            }
+            .progress-bar-fill {
+                height: 100%;
+                background: var(--accent-blue);
+                width: 0%;
+                transition: width 0.3s;
+            }
+            .global-progress {
+                background: #0f172a;
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                padding: 15px;
+                margin-top: 25px;
+                display: none;
+                align-items: center;
+                justify-content: space-between;
+                gap: 15px;
+            }
+            .global-progress-info {
+                flex: 1;
+            }
+            .btn-stop {
+                background: var(--accent-red);
+                color: white;
+            }
+            .btn-stop:hover {
+                background: #dc2626;
+            }
+            .back-btn-container {
+                text-align: center;
+                margin-top: 30px;
+                border-top: 1px solid var(--border-color);
+                padding-top: 20px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>📁 Astro Index Manager</h2>
+            <p class="desc">
+                プレートソルブ用のインデックスファイル（ASTAP/Astrometry.net互換）の管理・ダウンロード画面です。
+                度数（Degree）表記の対応視野角から、ご自身の望遠鏡・カメラシステムに最適なインデックスを選択して簡単にインストール/アンインストールできます。
+            </p>
+
+            <!-- 保存先選択 -->
+            <div class="form-group">
+                <label for="dir-select">💾 保存先ディレクトリ</label>
+                <div style="display: flex; gap: 10px;">
+                    <select id="dir-select" onchange="onDirChanged()" style="flex: 1;">
+                        <option value="/home/tstudio/.local/share/kstars/astrometry">/home/tstudio/.local/share/kstars/astrometry (KStarsデフォルト)</option>
+                        <option value="/usr/share/astrometry">/usr/share/astrometry (システム共有)</option>
+                        <option value="custom">-- カスタムディレクトリを登録する --</option>
+                    </select>
+                    <button id="remove-dir-btn" class="btn" style="background: var(--accent-red); color: white; display: none;" onclick="removeCurrentDir()">Remove</button>
+                </div>
+                
+                <div id="custom-dir-container" class="custom-dir-box" style="display: none;">
+                    <input type="text" id="custom-dir-input" placeholder="例: /path/to/custom/astrometry/data">
+                    <button class="btn btn-blue" onclick="addCustomDir()">選択・追加</button>
+                </div>
+            </div>
+
+            <!-- パーミッションステータス -->
+            <div id="status-panel" class="status-panel"></div>
+
+            <h3 style="border-left: 4px solid var(--accent-blue); padding-left: 10px; margin-top: 30px;">📂 インデックスファイル一覧 (5200番台対応)</h3>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: -5px; margin-bottom: 15px;">
+                チェックを入れると自動でダウンロードを開始し、チェックを外すと削除されます。
+            </p>
+
+            <div id="index-list" class="index-grid">
+                <!-- JavaScriptでリアルタイムに挿入されます -->
+            </div>
+
+            <!-- グローバルダウンロード進行表示 -->
+            <div id="global-progress" class="global-progress">
+                <div class="global-progress-info">
+                    <div id="global-progress-title" style="font-weight: bold; font-size: 0.9rem;">ダウンロード中...</div>
+                    <div class="progress-bar-container" style="display: block; margin-top: 5px;">
+                        <div id="global-progress-fill" class="progress-bar-fill"></div>
+                    </div>
+                </div>
+                <button id="global-stop-btn" class="btn btn-stop">一時停止</button>
+            </div>
+
+            <div class="back-btn-container">
+                <button class="btn btn-blue" style="margin: 0 auto; display: inline-block;" onclick="location.href='/'">コンソールへ戻る</button>
+            </div>
+        </div>
+
+        <script>
+            let currentPath = "/home/tstudio/.local/share/kstars/astrometry";
+            let pollTimer = null;
+            let downloadingNum = null;
+
+            function init() {
+                // ローカルストレージからカスタムディレクトリを復元
+                const savedCustoms = JSON.parse(localStorage.getItem("custom_dirs") || "[]");
+                const select = document.getElementById("dir-select");
+                savedCustoms.forEach(path => {
+                    const opt = document.createElement("option");
+                    opt.value = path;
+                    opt.textContent = path + " (カスタム)";
+                    // customの直前に挿入
+                    select.insertBefore(opt, select.lastElementChild);
+                });
+
+                // 初期パスを設定
+                const savedLastPath = localStorage.getItem("last_index_path");
+                if (savedLastPath) {
+                    if (Array.from(select.options).some(o => o.value === savedLastPath)) {
+                        select.value = savedLastPath;
+                        currentPath = savedLastPath;
+                    }
+                }
+                
+                onDirChanged();
+            }
+
+            function onDirChanged() {
+                const select = document.getElementById("dir-select");
+                const customBox = document.getElementById("custom-dir-container");
+                const removeBtn = document.getElementById("remove-dir-btn");
+                
+                const defaultPaths = [
+                    "/home/tstudio/.local/share/kstars/astrometry",
+                    "/usr/share/astrometry"
+                ];
+
+                if (select.value === "custom") {
+                    customBox.style.display = "flex";
+                    removeBtn.style.display = "none";
+                } else {
+                    customBox.style.display = "none";
+                    currentPath = select.value;
+                    localStorage.setItem("last_index_path", currentPath);
+                    
+                    if (!defaultPaths.includes(currentPath)) {
+                        removeBtn.style.display = "block";
+                    } else {
+                        removeBtn.style.display = "none";
+                    }
+                    
+                    scanDirectory();
+                }
+            }
+
+            function removeCurrentDir() {
+                const select = document.getElementById("dir-select");
+                const pathToRemove = select.value;
+                
+                if (!pathToRemove || pathToRemove === "custom") return;
+                
+                const defaultPaths = [
+                    "/home/tstudio/.local/share/kstars/astrometry",
+                    "/usr/share/astrometry"
+                ];
+                
+                if (defaultPaths.includes(pathToRemove)) {
+                    alert("デフォルトのディレクトリは削除できません。");
+                    return;
+                }
+                
+                if (!confirm(`カスタムディレクトリ "${pathToRemove}" を管理リストから削除しますか？`)) {
+                    return;
+                }
+                
+                // localStorageから削除
+                let savedCustoms = JSON.parse(localStorage.getItem("custom_dirs") || "[]");
+                savedCustoms = savedCustoms.filter(path => path !== pathToRemove);
+                localStorage.setItem("custom_dirs", JSON.stringify(savedCustoms));
+                
+                // セレクトボックスからオプションを削除
+                for (let i = 0; i < select.options.length; i++) {
+                    if (select.options[i].value === pathToRemove) {
+                        select.remove(i);
+                        break;
+                    }
+                }
+                
+                // デフォルトに戻す
+                select.value = "/home/tstudio/.local/share/kstars/astrometry";
+                onDirChanged();
+            }
+
+            function addCustomDir() {
+                const input = document.getElementById("custom-dir-input");
+                const path = input.value.trim();
+                if (!path) return;
+
+                const select = document.getElementById("dir-select");
+                // 既に存在するか
+                if (!Array.from(select.options).some(o => o.value === path)) {
+                    const opt = document.createElement("option");
+                    opt.value = path;
+                    opt.textContent = path + " (カスタム)";
+                    select.insertBefore(opt, select.lastElementChild);
+                    
+                    // 保存
+                    const savedCustoms = JSON.parse(localStorage.getItem("custom_dirs") || "[]");
+                    savedCustoms.push(path);
+                    localStorage.setItem("custom_dirs", JSON.stringify(savedCustoms));
+                }
+
+                select.value = path;
+                document.getElementById("custom-dir-container").style.display = "none";
+                currentPath = path;
+                localStorage.setItem("last_index_path", currentPath);
+                input.value = "";
+                scanDirectory();
+            }
+
+            async function scanDirectory() {
+                try {
+                    const res = await fetch(`/api/scanned_indices?path=${encodeURIComponent(currentPath)}`);
+                    if (!res.ok) throw new Error("APIエラー");
+                    const data = await res.json();
+                    
+                    updateStatusPanel(data);
+                    renderIndexList(data.indices);
+                    checkRunningDownloads(data.indices);
+                } catch (e) {
+                    console.error("スキャン失敗:", e);
+                }
+            }
+
+            function updateStatusPanel(data) {
+                const panel = document.getElementById("status-panel");
+                panel.style.display = "block";
+                
+                if (data.exists && data.writable) {
+                    panel.className = "status-panel status-ok";
+                    panel.innerHTML = `<strong>● 正常 (書き込み可能)</strong><br><code style="font-size: 0.85rem;">${data.path}</code>`;
+                } else if (data.exists && !data.writable) {
+                    panel.className = "status-panel status-error";
+                    panel.innerHTML = `<strong>⚠️ 書き込み制限あり (システム領域など)</strong><br><code style="font-size: 0.85rem;">${data.path}</code><br><span style="font-size: 0.8rem; opacity: 0.9;">エラー詳細: ${data.err_msg || "書き込み権限がありません。管理者権限(sudo)等でフォルダのパーミッションを変更してください。"}</span>`;
+                } else {
+                    panel.className = "status-panel status-error";
+                    panel.innerHTML = `<strong>✖ 未検出 (存在しません)</strong><br><code style="font-size: 0.85rem;">${data.path}</code><br><span style="font-size: 0.8rem; opacity: 0.9;">ディレクトリが存在しません。チェックボックスをONにすると自動生成を試みますが、書き込み制限に注意してください。</span>`;
+                }
+            }
+
+            function renderIndexList(indices) {
+                const container = document.getElementById("index-list");
+                container.innerHTML = "";
+
+                indices.forEach(item => {
+                    const card = document.createElement("div");
+                    card.className = "index-card";
+                    
+                    let badgeClass = "badge-missing";
+                    let badgeText = "未検出";
+                    let isChecked = item.installed ? "checked" : "";
+                    let isDisable = "";
+
+                    if (item.status === "downloading") {
+                        badgeClass = "badge-downloading";
+                        badgeText = `DL中 ${item.progress}%`;
+                        isDisable = "disabled";
+                    } else if (item.installed) {
+                        badgeClass = "badge-installed";
+                        badgeText = "インストール済";
+                    }
+
+                    card.innerHTML = `
+                        <input type="checkbox" id="chk-${item.num}" ${isChecked} ${isDisable} onchange="toggleIndex('${item.num}', this.checked)">
+                        <div class="index-info">
+                            <div class="index-name">
+                                index-${item.num}
+                                <span class="status-badge ${badgeClass}">${badgeText}</span>
+                            </div>
+                            <div class="fov-tag">対応視野角: <strong>${item.fov}</strong></div>
+                            <div class="size-tag">サイズ: ${item.installed ? (item.actual_size_desc || item.size_desc) : item.size_desc}</div>
+                            
+                            <div class="progress-bar-container" id="progress-container-${item.num}" style="display: ${item.status === 'downloading' ? 'block' : 'none'}">
+                                <div class="progress-bar-fill" id="progress-fill-${item.num}" style="width: ${item.progress}%"></div>
+                            </div>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            }
+
+            async function toggleIndex(num, check) {
+                if (check) {
+                    // ダウンロード開始
+                    try {
+                        const res = await fetch("/api/download_index", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ path: currentPath, num: num })
+                        });
+                        if (res.ok) {
+                            startPolling();
+                        }
+                    } catch (e) {
+                        alert("ダウンロード開始に失敗しました: " + e);
+                        scanDirectory();
+                    }
+                } else {
+                    // 削除
+                    if (!confirm(`インデックス index-${num} を削除してよろしいですか？`)) {
+                        document.getElementById(`chk-${num}`).checked = true;
+                        return;
+                    }
+                    try {
+                        const res = await fetch("/api/delete_index", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ path: currentPath, num: num })
+                        });
+                        if (res.ok) {
+                            scanDirectory();
+                        }
+                    } catch (e) {
+                        alert("削除に失敗しました: " + e);
+                        scanDirectory();
+                    }
+                }
+            }
+
+            function checkRunningDownloads(indices) {
+                const downloading = indices.find(item => item.status === "downloading");
+                const globalProgress = document.getElementById("global-progress");
+                
+                if (downloading) {
+                    downloadingNum = downloading.num;
+                    globalProgress.style.display = "flex";
+                    document.getElementById("global-progress-title").textContent = `index-${downloading.num} をダウンロード中... (${downloading.progress}%)`;
+                    document.getElementById("global-progress-fill").style.width = downloading.progress + "%";
+                    
+                    document.getElementById("global-stop-btn").onclick = () => stopDownload(downloading.num);
+                    startPolling();
+                } else {
+                    globalProgress.style.display = "none";
+                    downloadingNum = null;
+                }
+            }
+
+            async function stopDownload(num) {
+                if (!confirm("ダウンロードを停止しますか？")) return;
+                try {
+                    await fetch("/api/cancel_download", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ path: currentPath, num: num })
+                    });
+                    scanDirectory();
+                } catch (e) {
+                    console.error("ダウンロードキャンセル失敗:", e);
+                }
+            }
+
+            function startPolling() {
+                if (pollTimer) return;
+                pollTimer = setInterval(async () => {
+                    try {
+                        const res = await fetch(`/api/scanned_indices?path=${encodeURIComponent(currentPath)}`);
+                        if (!res.ok) return;
+                        const data = await res.json();
+                        
+                        renderIndexList(data.indices);
+                        
+                        const downloading = data.indices.find(item => item.status === "downloading");
+                        if (downloading) {
+                            document.getElementById("global-progress").style.display = "flex";
+                            document.getElementById("global-progress-title").textContent = `index-${downloading.num} をダウンロード中... (${downloading.progress}%)`;
+                            document.getElementById("global-progress-fill").style.width = downloading.progress + "%";
+                        } else {
+                            // ダウンロードが完了または終了した
+                            clearInterval(pollTimer);
+                            pollTimer = null;
+                            document.getElementById("global-progress").style.display = "none";
+                            scanDirectory();
+                        }
+                    } catch (e) {
+                        console.error(e);
+                    }
+                }, 1000);
+            }
+
+            window.onload = init;
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     db_json = json.dumps(load_astro_db())
@@ -685,7 +1498,10 @@ async def index():
     </head>
     <body onload="loadSettings()">
         <div class="container">
-            <header><h2>🔭 TSPS CONSOLE</h2></header>
+            <header style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; border-bottom: 2px solid var(--accent-red); padding-bottom: 10px;">
+                <h2 style="margin: 0; font-size: 1.4rem; letter-spacing: 1px; color: #fff;">🔭 TSPS CONSOLE</h2>
+                <button type="button" class="search-btn" style="background: #3b82f6; border-radius: 4px; border: none; color: white; padding: 8px 16px; cursor: pointer; font-weight: bold;" onclick="location.href='/index_manager'">INDEX MANAGER</button>
+            </header>
             <div class="section-title">Object Search</div>
             <div class="section">
                 <div class="search-box">
