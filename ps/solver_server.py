@@ -740,15 +740,14 @@ INDEX_METADATA = [
 ]
 
 ASTAP_INDEX_METADATA = [
-    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d80_star_database_mag16_astap.zip", "is_zip": True},
-    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d50_star_database_mag15_astap.zip", "is_zip": True},
-    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/v50_star_database_mag15_astap.zip", "is_zip": True},
-    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d20_star_database_mag13_astap.zip", "is_zip": True},
-    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d05_star_database_mag11_astap.zip", "is_zip": True},
-    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/v05_star_database_mag11_astap.zip", "is_zip": True},
-    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/g05_star_database_mag11_astap.zip", "is_zip": True},
-    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/w08_star_database_mag08_astap.zip", "is_zip": True},
-    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MB", "pattern": "hyperleda.*", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/hyperleda.zip", "is_zip": True}
+    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://drive.google.com/file/d/1HJZQU7BXHc-OvS0BNi_b3Cu8ARy2px2K/view?usp=sharing", "is_zip": True},
+    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://drive.google.com/file/d/1w2UnCtwnWa35cj67yhLFh0nbZKwdiIGt/view?usp=sharing", "is_zip": False},
+    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://drive.google.com/file/d/13UnLqhp3GHfxrqmQ_BpnLB9CXL8VVrwX/view?usp=sharing", "is_zip": True},
+    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://drive.google.com/file/d/18ObI5OLA-RyepIIEIZLZTRZJ3dcQkDhR/view?usp=sharing", "is_zip": False},
+    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://drive.google.com/file/d/1i12A7Rciln26k0y7vg10rQREQnzLUjzQ/view?usp=sharing", "is_zip": False},
+    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://www.hnsky.org/v05_zipped.zip", "is_zip": True},
+    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://www.hnsky.org/g05_zipped.zip", "is_zip": True},
+    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://drive.google.com/file/d/133Fy2o948bNFcTeDJ5-7kt1ORXCOiSKq/view?usp=sharing", "is_zip": True}
 ]
 
 ASTAP_DOWNLOAD_TASKS = {}
@@ -756,71 +755,171 @@ ASTAP_DIR = "/opt/astap"
 
 def astap_download_worker(num, url, pattern, is_zip):
     key = num
-    download_filename = url.split('/')[-1]
-    if download_filename == "download":
-        parts = url.split('/')
-        if len(parts) >= 2:
-            download_filename = parts[-2]
-    target_filepath = os.path.join(ASTAP_DIR, download_filename)
+    
+    resolved_url = url
+    default_filenames = {
+        "D80": "d80_zipped.zip",
+        "D50": "d50_installer.deb",
+        "V50": "v50_zipped.zip",
+        "D20": "d20_installer.deb",
+        "D05": "d05_installer.deb",
+        "V05": "v05_zipped.zip",
+        "G05": "g05_zipped.zip",
+        "W08": "w08_zipped.zip",
+        "hyperleda": "hyperleda.zip"
+    }
+    download_filename = default_filenames.get(num, "star_database.bin")
+    
+    user_download_dir = os.path.expanduser("~/astap_downloads")
+    target_filepath = os.path.join(user_download_dir, download_filename)
     try:
-        if not os.path.exists(ASTAP_DIR):
-            os.makedirs(ASTAP_DIR, exist_ok=True)
+        if not os.path.exists(user_download_dir):
+            os.makedirs(user_download_dir, exist_ok=True)
             
         import urllib.request
         import urllib.error
         import urllib.parse
         import http.cookiejar
         import ssl
+        import subprocess
+        import re
         
         context = ssl._create_unverified_context()
         cj = http.cookiejar.CookieJar()
         
-        class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-            def http_error_301(self, req, fp, code, msg, hdrs):
-                return fp
-            def http_error_302(self, req, fp, code, msg, hdrs):
-                return fp
-            def http_error_303(self, req, fp, code, msg, hdrs):
-                return fp
-            def http_error_307(self, req, fp, code, msg, hdrs):
-                return fp
-            def http_error_308(self, req, fp, code, msg, hdrs):
-                return fp
+        class CustomRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+                new_req = super().redirect_request(req, fp, code, msg, hdrs, newurl)
+                if new_req:
+                    for k, v in req.headers.items():
+                        if k.lower() not in ['host', 'content-length', 'content-type']:
+                            new_req.add_header(k, v)
+                return new_req
                 
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj), NoRedirectHandler())
-        urllib.request.install_opener(opener)
+        https_handler = urllib.request.HTTPSHandler(context=context)
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cj),
+            https_handler,
+            CustomRedirectHandler()
+        )
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
             'Connection': 'keep-alive',
-            'Referer': 'https://sourceforge.net/'
+            'Referer': 'https://www.hnsky.org/'
         }
         
-        current_url = url
-        response = None
-        for i in range(10):
-            req = urllib.request.Request(current_url, headers=headers)
-            res = urllib.request.urlopen(req, context=context)
-            code = res.getcode()
-            if code in (301, 302, 303, 307, 308):
-                loc = res.info().get('Location')
-                if loc:
-                    current_url = urllib.parse.urljoin(current_url, loc)
-                    res.close()
-                    continue
-            response = res
-            break
+        try:
+            if "drive.google.com" not in url and "docs.google.com" not in url:
+                logger.info(f"Resolving actual download url for {num} from hnsky.org/astap.htm...")
+                req_index = urllib.request.Request("https://www.hnsky.org/astap.htm", headers=headers)
+                with opener.open(req_index, timeout=15) as res_index:
+                    html_index = res_index.read().decode('utf-8', errors='ignore')
+                    anchors = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html_index, re.DOTALL | re.IGNORECASE)
+                    
+                    target_kws = []
+                    num_lower = num.lower()
+                    if num_lower == "d80":
+                        target_kws = ["d80 zipped", "d80_zipped", "d80"]
+                    elif num_lower == "d50":
+                        target_kws = ["d50 installer", "d50_installer", "d50"]
+                    elif num_lower == "v50":
+                        target_kws = ["v50 zipped", "v50_zipped", "v50"]
+                    elif num_lower == "d20":
+                        target_kws = ["d20 installer", "d20_installer", "d20"]
+                    elif num_lower == "d05":
+                        target_kws = ["d05 installer", "d05_installer", "d05"]
+                    elif num_lower == "v05":
+                        target_kws = ["v05 zipped", "v05_zipped", "v05"]
+                    elif num_lower == "g05":
+                        target_kws = ["g05 zipped", "g05_zipped", "g05"]
+                    elif num_lower == "w08":
+                        target_kws = ["w08 zipped", "w08_zipped", "w08"]
+                    elif num_lower == "hyperleda":
+                        target_kws = ["hyperleda"]
+
+                    found_url = None
+                    for href, text in anchors:
+                        clean_text = re.sub(r'<[^>]+>', '', text)
+                        clean_text = " ".join(clean_text.split()).strip().lower()
+                        for kw in target_kws:
+                            if kw == clean_text or f"{kw} " in clean_text or f" {kw}" in clean_text or (kw == "hyperleda" and kw in clean_text):
+                                found_url = href
+                                break
+                        if found_url:
+                            break
+                    
+                    if found_url:
+                        if found_url.startswith("/"):
+                            resolved_url = "https://www.hnsky.org" + found_url
+                        elif not found_url.startswith("http"):
+                            resolved_url = "https://www.hnsky.org/" + found_url
+                        logger.info(f"Dynamically found URL for {num}: {resolved_url}")
+                    else:
+                        logger.warning(f"Could not dynamically find URL for {num} in hnsky.org, fallback to meta URL: {url}")
+        except Exception as re_err:
+            logger.warning(f"Failed dynamically resolving URL for {num} (will fallback to meta URL): {re_err}")
+
+        gdrive_id = None
+        if "drive.google.com" in resolved_url or "docs.google.com" in resolved_url:
+            m = re.search(r'/file/d/([A-Za-z0-9_-]+)', resolved_url)
+            if m:
+                gdrive_id = m.group(1)
+            else:
+                m = re.search(r'[?&]id=([A-Za-z0-9_-]+)', resolved_url)
+                if m:
+                    gdrive_id = m.group(1)
+
+        if gdrive_id:
+            logger.info(f"Using Google Drive Downloader for {num} (File ID: {gdrive_id})...")
+            drive_base_url = f"https://docs.google.com/uc?export=download&id={gdrive_id}"
+            req_drive = urllib.request.Request(drive_base_url, headers=headers)
+            response = opener.open(req_drive, timeout=30)
             
-        if response is None:
-            raise Exception("Failed to follow redirect to a final URL")
+            content_type = response.headers.get('content-type', '')
+            if 'html' in content_type.lower():
+                html_content = response.read().decode('utf-8', errors='ignore')
+                confirm_match = re.search(r'confirm=([A-Za-z0-9_-]+)', html_content)
+                if not confirm_match:
+                    confirm_match = re.search(r'value="([A-Za-z0-9_-]+)"\s+name="confirm"', html_content)
+                if not confirm_match:
+                    confirm_match = re.search(r'name="confirm"\s+value="([A-Za-z0-9_-]+)"', html_content)
+                
+                if confirm_match:
+                    confirm_token = confirm_match.group(1)
+                    logger.info(f"Found Google Drive confirm token: {confirm_token}")
+                    drive_download_url = f"https://docs.google.com/uc?export=download&confirm={confirm_token}&id={gdrive_id}"
+                    req_drive_confirm = urllib.request.Request(drive_download_url, headers=headers)
+                    response = opener.open(req_drive_confirm, timeout=30)
+                else:
+                    logger.warning("Google Drive returned HTML but no confirm token found. Proceeding with raw response...")
             
+            cd = response.headers.get('content-disposition', '')
+            if 'filename=' in cd:
+                m_fn = re.search(r'filename=["\']?([^"\';]+)["\']?', cd)
+                if m_fn:
+                    download_filename = m_fn.group(1)
+                    target_filepath = os.path.join(user_download_dir, download_filename)
+                    logger.info(f"Extracted real filename from response headers: {download_filename}")
+        else:
+            logger.info(f"Using Standard Downloader for {num} from URL: {resolved_url}...")
+            req = urllib.request.Request(resolved_url, headers=headers)
+            response = opener.open(req, timeout=30)
+            
+            url_path = urllib.parse.urlparse(resolved_url).path
+            parsed_filename = url_path.split('/')[-1]
+            if parsed_filename and (parsed_filename.endswith('.zip') or parsed_filename.endswith('.deb') or parsed_filename.endswith('.gz') or parsed_filename.endswith('.tar')):
+                download_filename = parsed_filename
+                target_filepath = os.path.join(user_download_dir, download_filename)
+
         with response:
             total_size = int(response.headers.get('content-length', 0))
             chunk_size = 1024 * 64
             downloaded = 0
             
+            logger.info(f"Downloading to {target_filepath} (Total size: {total_size} bytes) ...")
             with open(target_filepath, 'wb') as f:
                 while True:
                     if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("stop", False):
@@ -835,9 +934,14 @@ def astap_download_worker(num, url, pattern, is_zip):
                         progress = int((downloaded / total_size) * 100)
                         ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
                     else:
-                        ASTAP_DOWNLOAD_TASKS[key]["progress"] = 50
+                        mb_downloaded = downloaded / (1024 * 1024)
+                        progress = min(99, int(mb_downloaded * 2))
+                        ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
                         
             if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+                if not os.path.exists(ASTAP_DIR):
+                    os.makedirs(ASTAP_DIR, exist_ok=True)
+                
                 if is_zip:
                     ASTAP_DOWNLOAD_TASKS[key]["status"] = "extracting"
                     try:
@@ -867,10 +971,22 @@ def astap_download_worker(num, url, pattern, is_zip):
                             try: os.remove(target_filepath)
                             except: pass
                 else:
+                    ASTAP_DOWNLOAD_TASKS[key]["status"] = "installing"
                     try:
-                        os.chmod(target_filepath, 0o777)
-                    except Exception as pe:
-                        logger.warning(f"Failed to chmod file {target_filepath}: {pe}")
+                        logger.info(f"Installing deb package {target_filepath} ...")
+                        res = subprocess.run(["dpkg", "-i", target_filepath], capture_output=True, text=True)
+                        if res.returncode != 0:
+                            logger.warning(f"dpkg -i failed, trying fallback dpkg-deb -x: {res.stderr}")
+                            res2 = subprocess.run(["dpkg-deb", "-x", target_filepath, "/"], capture_output=True, text=True)
+                            if res2.returncode != 0:
+                                raise Exception(f"Failed to install deb package: {res.stderr}\nFallback error: {res2.stderr}")
+                    except Exception as de:
+                        logger.error(f"Error during installing of {target_filepath}: {de}")
+                        raise de
+                    finally:
+                        if os.path.exists(target_filepath):
+                            try: os.remove(target_filepath)
+                            except: pass
                 
                 ASTAP_DOWNLOAD_TASKS[key]["status"] = "completed"
                 ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
