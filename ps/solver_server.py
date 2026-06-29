@@ -1054,88 +1054,88 @@ def astap_download_worker(num, url, pattern, is_zip):
                             progress = min(99, int(mb_downloaded * 2))
                             ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
                         
-            if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
-                if not os.path.exists(ASTAP_DIR):
-                    os.makedirs(ASTAP_DIR, exist_ok=True)
-                
-                if is_zip:
-                    ASTAP_DOWNLOAD_TASKS[key]["status"] = "extracting"
-                    try:
-                        logger.info(f"Extracting {target_filepath} to {ASTAP_DIR} ...")
-                        extracted_files = []
-                        with zipfile.ZipFile(target_filepath, 'r') as zip_ref:
-                            for member in zip_ref.infolist():
-                                if not member.is_dir():
-                                    filename = os.path.basename(member.filename).lower()
-                                    if filename:
-                                        dest_path = os.path.join(ASTAP_DIR, filename)
-                                        logger.info(f"Extracting member {member.filename} -> {dest_path}")
-                                        with zip_ref.open(member) as source, open(dest_path, "wb") as target:
-                                            target.write(source.read())
-                                        extracted_files.append(dest_path)
-                                        
-                        for ef in extracted_files:
-                            try:
-                                os.chmod(ef, 0o777)
-                            except Exception as ce:
-                                logger.warning(f"Failed to chmod extracted file {ef}: {ce}")
-                    except Exception as ze:
-                        logger.error(f"Error during extraction of {target_filepath}: {ze}")
-                        raise ze
-                    finally:
-                        if os.path.exists(target_filepath):
-                            try: os.remove(target_filepath)
-                            except: pass
-                else:
-                    ASTAP_DOWNLOAD_TASKS[key]["status"] = "installing"
-                    try:
-                        logger.info(f"Installing deb package {target_filepath} ...")
-                        # 権限問題を避けるため、直接 dpkg -i は行わず、一般ユーザー権限で動作する /tmp/deb_extract_temp に dpkg-deb -x で展開します。
-                        # その後、展開されたすべてのファイルを ASTAP_DIR (/opt/astap) へコピーします。
-                        import shutil
-                        extract_dir = "/tmp/deb_extract_temp"
-                        if os.path.exists(extract_dir):
-                            shutil.rmtree(extract_dir)
-                        os.makedirs(extract_dir, exist_ok=True)
-                        
-                        logger.info(f"Extracting deb package {target_filepath} to {extract_dir} ...")
-                        res = subprocess.run(["dpkg-deb", "-x", target_filepath, extract_dir], capture_output=True, text=True)
-                        if res.returncode != 0:
-                            raise Exception(f"Failed to extract deb package with dpkg-deb -x: {res.stderr}")
-                        
-                        copied_count = 0
-                        for root_dir, dirs, files in os.walk(extract_dir):
-                            for file in files:
-                                src_file = os.path.join(root_dir, file)
-                                dest_file = os.path.join(ASTAP_DIR, file)
-                                logger.info(f"Copying extracted file {src_file} -> {dest_file}")
-                                shutil.copy2(src_file, dest_file)
-                                try:
-                                    os.chmod(dest_file, 0o777)
-                                except Exception as ce:
-                                    logger.warning(f"Failed to chmod file {dest_file}: {ce}")
-                                copied_count += 1
-                        
-                        logger.info(f"Successfully installed deb package: copied {copied_count} files to {ASTAP_DIR}")
-                        
+        if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+            if not os.path.exists(ASTAP_DIR):
+                os.makedirs(ASTAP_DIR, exist_ok=True)
+            
+            if is_zip:
+                ASTAP_DOWNLOAD_TASKS[key]["status"] = "extracting"
+                try:
+                    logger.info(f"Extracting {target_filepath} to {ASTAP_DIR} ...")
+                    extracted_files = []
+                    with zipfile.ZipFile(target_filepath, 'r') as zip_ref:
+                        for member in zip_ref.infolist():
+                            if not member.is_dir():
+                                filename = os.path.basename(member.filename).lower()
+                                if filename:
+                                    dest_path = os.path.join(ASTAP_DIR, filename)
+                                    logger.info(f"Extracting member {member.filename} -> {dest_path}")
+                                    with zip_ref.open(member) as source, open(dest_path, "wb") as target:
+                                        target.write(source.read())
+                                    extracted_files.append(dest_path)
+                                    
+                    for ef in extracted_files:
                         try:
-                            shutil.rmtree(extract_dir)
-                        except:
-                            pass
-                    except Exception as de:
-                        logger.error(f"Error during installing of {target_filepath}: {de}")
-                        raise de
-                    finally:
-                        if os.path.exists(target_filepath):
-                            try: os.remove(target_filepath)
-                            except: pass
-                
-                ASTAP_DOWNLOAD_TASKS[key]["status"] = "completed"
-                ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
-                dir_list_cache.invalidate(ASTAP_DIR)
+                            os.chmod(ef, 0o777)
+                        except Exception as ce:
+                            logger.warning(f"Failed to chmod extracted file {ef}: {ce}")
+                except Exception as ze:
+                    logger.error(f"Error during extraction of {target_filepath}: {ze}")
+                    raise ze
+                finally:
+                    if os.path.exists(target_filepath):
+                        try: os.remove(target_filepath)
+                        except: pass
             else:
-                if os.path.exists(target_filepath):
-                    os.remove(target_filepath)
+                ASTAP_DOWNLOAD_TASKS[key]["status"] = "installing"
+                try:
+                    logger.info(f"Installing deb package {target_filepath} ...")
+                    # 権限問題を避けるため、直接 dpkg -i は行わず、一般ユーザー権限で動作する /tmp/deb_extract_temp に dpkg-deb -x で展開します。
+                    # その後、展開されたすべてのファイルを ASTAP_DIR (/opt/astap) へコピーします。
+                    import shutil
+                    extract_dir = "/tmp/deb_extract_temp"
+                    if os.path.exists(extract_dir):
+                        shutil.rmtree(extract_dir)
+                    os.makedirs(extract_dir, exist_ok=True)
+                    
+                    logger.info(f"Extracting deb package {target_filepath} to {extract_dir} ...")
+                    res = subprocess.run(["dpkg-deb", "-x", target_filepath, extract_dir], capture_output=True, text=True)
+                    if res.returncode != 0:
+                        raise Exception(f"Failed to extract deb package with dpkg-deb -x: {res.stderr}")
+                    
+                    copied_count = 0
+                    for root_dir, dirs, files in os.walk(extract_dir):
+                        for file in files:
+                            src_file = os.path.join(root_dir, file)
+                            dest_file = os.path.join(ASTAP_DIR, file)
+                            logger.info(f"Copying extracted file {src_file} -> {dest_file}")
+                            shutil.copy2(src_file, dest_file)
+                            try:
+                                os.chmod(dest_file, 0o777)
+                            except Exception as ce:
+                                logger.warning(f"Failed to chmod file {dest_file}: {ce}")
+                            copied_count += 1
+                    
+                    logger.info(f"Successfully installed deb package: copied {copied_count} files to {ASTAP_DIR}")
+                    
+                    try:
+                        shutil.rmtree(extract_dir)
+                    except:
+                        pass
+                except Exception as de:
+                    logger.error(f"Error during installing of {target_filepath}: {de}")
+                    raise de
+                finally:
+                    if os.path.exists(target_filepath):
+                        try: os.remove(target_filepath)
+                        except: pass
+            
+            ASTAP_DOWNLOAD_TASKS[key]["status"] = "completed"
+            ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
+            dir_list_cache.invalidate(ASTAP_DIR)
+        else:
+            if os.path.exists(target_filepath):
+                os.remove(target_filepath)
     except Exception as e:
         logger.error(f"ASTAP Download Error for {num}: {e}")
         ASTAP_DOWNLOAD_TASKS[key]["status"] = "failed"
