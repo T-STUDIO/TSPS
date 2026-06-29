@@ -882,38 +882,63 @@ def astap_download_worker(num, url, pattern, is_zip):
             except ImportError:
                 logger.info("gdown not found in python environment. Attempting to install it via pip...")
                 try:
-                    import subprocess
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown"])
+                    import subprocess as pip_sp
+                    pip_sp.check_call([sys.executable, "-m", "pip", "install", "gdown"])
                     import gdown
                 except Exception as pip_err:
                     logger.error(f"Failed to install gdown via pip: {pip_err}")
                     raise Exception(f"gdown is required for Google Drive downloads but could not be imported or installed: {pip_err}")
 
-            ASTAP_DOWNLOAD_TASKS[key]["progress"] = 20
-            logger.info(f"Downloading with gdown.download for id {gdrive_id} to {target_filepath}")
+            ASTAP_DOWNLOAD_TASKS[key]["progress"] = 5
+            logger.info(f"Downloading with gdown CLI for id {gdrive_id} to {target_filepath}")
             
-            try:
-                logger.info(f"gdown.download with id={gdrive_id}")
-                downloaded_path = gdown.download(id=gdrive_id, output=target_filepath, quiet=True)
-                
-                if not downloaded_path or not os.path.exists(target_filepath):
-                    logger.warning("gdown.download with ID failed or returned None. Retrying with constructed URL...")
-                    drive_url = f"https://drive.google.com/uc?id={gdrive_id}"
-                    downloaded_path = gdown.download(url=drive_url, output=target_filepath, quiet=True)
+            cmds_to_try = [
+                ["gdown", "--id", gdrive_id, "-O", target_filepath],
+                [sys.executable, "-m", "gdown", "--id", gdrive_id, "-O", target_filepath],
+                ["gdown", resolved_url, "-O", target_filepath],
+                [sys.executable, "-m", "gdown", resolved_url, "-O", target_filepath]
+            ]
+            
+            gdown_success = False
+            for cmd in cmds_to_try:
+                if gdown_success:
+                    break
+                logger.info(f"Executing gdown command: {' '.join(cmd)}")
+                try:
+                    import subprocess as sp
+                    process = sp.Popen(
+                        cmd,
+                        stdout=sp.PIPE,
+                        stderr=sp.STDOUT,
+                        stdin=sp.DEVNULL,
+                        text=True,
+                        bufsize=1
+                    )
                     
-                if not downloaded_path or not os.path.exists(target_filepath):
-                    logger.warning("gdown.download with ID and constructed URL failed. Retrying with resolved_url...")
-                    downloaded_path = gdown.download(url=resolved_url, output=target_filepath, quiet=True)
+                    while True:
+                        line = process.stdout.readline()
+                        if not line:
+                            break
+                        m_pct = re.search(r'(\d+)%', line)
+                        if m_pct:
+                            pct = int(m_pct.group(1))
+                            ASTAP_DOWNLOAD_TASKS[key]["progress"] = min(99, pct)
+                            
+                    process.wait()
+                    if process.returncode == 0 and os.path.exists(target_filepath) and os.path.getsize(target_filepath) > 0:
+                        logger.info(f"gdown command succeeded: {target_filepath}")
+                        gdown_success = True
+                    else:
+                        logger.warning(f"gdown command returned non-zero or file empty: code={process.returncode}")
+                except Exception as cmd_err:
+                    logger.warning(f"Failed to execute gdown command {' '.join(cmd)}: {cmd_err}")
                     
-                if downloaded_path and os.path.exists(target_filepath):
-                    logger.info(f"gdown successfully downloaded file to {target_filepath}")
-                    ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
-                    download_completed_via_gdown = True
-                else:
-                    raise Exception("gdown completed but target file does not exist.")
-            except Exception as gdown_err:
-                logger.error(f"gdown download error: {gdown_err}")
-                raise Exception(f"gdown failed to download the Google Drive file: {gdown_err}")
+            if gdown_success:
+                ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
+                download_completed_via_gdown = True
+            else:
+                logger.error("All gdown CLI attempts failed.")
+                raise Exception("gdown failed to download the Google Drive file (CLI attempts exhausted).")
 
         if not download_completed_via_gdown:
             html_content_bytes = None
