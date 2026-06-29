@@ -740,14 +740,15 @@ INDEX_METADATA = [
 ]
 
 ASTAP_INDEX_METADATA = [
-    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://drive.google.com/file/d/1HJZQU7BXHc-OvS0BNi_b3Cu8ARy2px2K/view?usp=sharing", "is_zip": True},
-    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://drive.google.com/file/d/1w2UnCtwnWa35cj67yhLFh0nbZKwdiIGt/view?usp=sharing", "is_zip": False},
-    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://drive.google.com/file/d/13UnLqhp3GHfxrqmQ_BpnLB9CXL8VVrwX/view?usp=sharing", "is_zip": True},
-    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://drive.google.com/file/d/18ObI5OLA-RyepIIEIZLZTRZJ3dcQkDhR/view?usp=sharing", "is_zip": False},
-    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://drive.google.com/file/d/1i12A7Rciln26k0y7vg10rQREQnzLUjzQ/view?usp=sharing", "is_zip": False},
-    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://www.hnsky.org/v05_zipped.zip", "is_zip": True},
-    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://www.hnsky.org/g05_zipped.zip", "is_zip": True},
-    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://drive.google.com/file/d/133Fy2o948bNFcTeDJ5-7kt1ORXCOiSKq/view?usp=sharing", "is_zip": True}
+    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://drive.google.com/file/d/1ihYflHJkZ6Q0LD_pKSmUMpfuQ0OU5Vpq/view?usp=sharing", "is_zip": True},
+    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://drive.google.com/file/d/12rVDPu8sxVZ2rlEAbZJWTj2AQfnPAzfJ/view?usp=sharing", "is_zip": False},
+    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://drive.google.com/file/d/1wjkMkGF7HG1-w9-gyN2I52Kcc2XzkIec/view?usp=sharing", "is_zip": True},
+    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://drive.google.com/file/d/1gCaDUdpTQr74gNo91Diiyr2ATvBzMdEU/view?usp=sharing", "is_zip": False},
+    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://drive.google.com/file/d/1kI-BEVASyXL8xCiuFZ3-sRHpqxg7Kt4n/view?usp=sharing", "is_zip": False},
+    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://drive.google.com/file/d/12ZDlbihX4rQq4YEZ-fKrA9e1JkAUFLrs/view?usp=sharing", "is_zip": True},
+    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://drive.google.com/file/d/1EBB7xdj8OnVJpQX41Q60kLBoODr2mTRU/view?usp=sharing", "is_zip": True},
+    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://drive.google.com/file/d/1yyebFphFFb7mAuOnG3ZhkirIZhWololu/view?usp=sharing", "is_zip": True},
+    {"num": "hyperleda", "fov": "N/A", "size_desc": "N/A", "pattern": "*leda*", "url": "https://drive.google.com/file/d/1057JYxUqNdadITlbZelezYB9r_BZdeAk/view?usp=sharing", "is_zip": True}
 ]
 
 ASTAP_DOWNLOAD_TASKS = {}
