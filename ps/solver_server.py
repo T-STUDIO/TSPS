@@ -893,12 +893,17 @@ def astap_download_worker(num, url, pattern, is_zip):
             logger.info(f"Downloading with gdown.download for id {gdrive_id} to {target_filepath}")
             
             try:
-                # fuzzy=Trueにして、gdownの自動URL/ID解析を最大限活用
-                downloaded_path = gdown.download(id=gdrive_id, output=target_filepath, quiet=True, fuzzy=True)
+                logger.info(f"gdown.download with id={gdrive_id}")
+                downloaded_path = gdown.download(id=gdrive_id, output=target_filepath, quiet=True)
                 
                 if not downloaded_path or not os.path.exists(target_filepath):
-                    logger.warning("gdown.download with ID failed or returned None. Retrying with full URL...")
-                    downloaded_path = gdown.download(url=resolved_url, output=target_filepath, quiet=True, fuzzy=True)
+                    logger.warning("gdown.download with ID failed or returned None. Retrying with constructed URL...")
+                    drive_url = f"https://drive.google.com/uc?id={gdrive_id}"
+                    downloaded_path = gdown.download(url=drive_url, output=target_filepath, quiet=True)
+                    
+                if not downloaded_path or not os.path.exists(target_filepath):
+                    logger.warning("gdown.download with ID and constructed URL failed. Retrying with resolved_url...")
+                    downloaded_path = gdown.download(url=resolved_url, output=target_filepath, quiet=True)
                     
                 if downloaded_path and os.path.exists(target_filepath):
                     logger.info(f"gdown successfully downloaded file to {target_filepath}")
