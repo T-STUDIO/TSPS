@@ -899,11 +899,17 @@ def astap_download_worker(num, url, pattern, is_zip):
                 html_content_bytes = response.read()
                 html_content = html_content_bytes.decode('utf-8', errors='ignore')
                 
-                m_conf = re.search(r'confirm=([^&"\'\s>]+)', html_content)
+                m_conf = re.search(r'confirm=([A-Za-z0-9_-]+)', html_content)
                 if not m_conf:
-                    m_conf = re.search(r'value="([^"]+)"\s+name="confirm"', html_content)
+                    m_conf = re.search(r'value="([A-Za-z0-9_-]+)"\s+name="confirm"', html_content)
                 if not m_conf:
-                    m_conf = re.search(r'name="confirm"\s+value="([^"]+)"', html_content)
+                    m_conf = re.search(r'name="confirm"\s+value="([A-Za-z0-9_-]+)"', html_content)
+                if not m_conf:
+                    m_href = re.search(r'href="(/uc\?export=download[^"]+)"', html_content)
+                    if m_href:
+                        m_token = re.search(r'confirm=([A-Za-z0-9_-]+)', m_href.group(1))
+                        if m_token:
+                            m_conf = m_token
                 
                 if m_conf:
                     confirm_token = m_conf.group(1)
@@ -918,6 +924,14 @@ def astap_download_worker(num, url, pattern, is_zip):
                 req_drive_confirm = urllib.request.Request(drive_download_url, headers=gdrive_headers)
                 response = opener.open(req_drive_confirm, timeout=30)
                 html_content_bytes = None
+
+            final_content_type = response.headers.get('content-type', '') if html_content_bytes is None else 'text/html'
+            if 'html' in final_content_type.lower():
+                if html_content_bytes is None:
+                    html_content_bytes = response.read()
+                html_text = html_content_bytes.decode('utf-8', errors='ignore')
+                logger.error(f"Google Drive returned HTML block instead of binary file for {num}. Preview text: {html_text[:500]}")
+                raise Exception("Google Drive returned HTML preview page instead of the binary package. The download limit might be reached or Google blocked the automated download. Please try again.")
             
             cd = response.headers.get('content-disposition', '')
             if 'filename=' in cd:
@@ -998,12 +1012,38 @@ def astap_download_worker(num, url, pattern, is_zip):
                     ASTAP_DOWNLOAD_TASKS[key]["status"] = "installing"
                     try:
                         logger.info(f"Installing deb package {target_filepath} ...")
-                        res = subprocess.run(["dpkg", "-i", target_filepath], capture_output=True, text=True)
+                        # 権限問題を避けるため、直接 dpkg -i は行わず、一般ユーザー権限で動作する /tmp/deb_extract_temp に dpkg-deb -x で展開します。
+                        # その後、展開されたすべてのファイルを ASTAP_DIR (/opt/astap) へコピーします。
+                        import shutil
+                        extract_dir = "/tmp/deb_extract_temp"
+                        if os.path.exists(extract_dir):
+                            shutil.rmtree(extract_dir)
+                        os.makedirs(extract_dir, exist_ok=True)
+                        
+                        logger.info(f"Extracting deb package {target_filepath} to {extract_dir} ...")
+                        res = subprocess.run(["dpkg-deb", "-x", target_filepath, extract_dir], capture_output=True, text=True)
                         if res.returncode != 0:
-                            logger.warning(f"dpkg -i failed, trying fallback dpkg-deb -x: {res.stderr}")
-                            res2 = subprocess.run(["dpkg-deb", "-x", target_filepath, "/"], capture_output=True, text=True)
-                            if res2.returncode != 0:
-                                raise Exception(f"Failed to install deb package: {res.stderr}\nFallback error: {res2.stderr}")
+                            raise Exception(f"Failed to extract deb package with dpkg-deb -x: {res.stderr}")
+                        
+                        copied_count = 0
+                        for root_dir, dirs, files in os.walk(extract_dir):
+                            for file in files:
+                                src_file = os.path.join(root_dir, file)
+                                dest_file = os.path.join(ASTAP_DIR, file)
+                                logger.info(f"Copying extracted file {src_file} -> {dest_file}")
+                                shutil.copy2(src_file, dest_file)
+                                try:
+                                    os.chmod(dest_file, 0o777)
+                                except Exception as ce:
+                                    logger.warning(f"Failed to chmod file {dest_file}: {ce}")
+                                copied_count += 1
+                        
+                        logger.info(f"Successfully installed deb package: copied {copied_count} files to {ASTAP_DIR}")
+                        
+                        try:
+                            shutil.rmtree(extract_dir)
+                        except:
+                            pass
                     except Exception as de:
                         logger.error(f"Error during installing of {target_filepath}: {de}")
                         raise de
