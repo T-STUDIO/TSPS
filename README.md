@@ -6,7 +6,7 @@ Requires setting up Astrometry.net, sep, and ASTAP in a local environment.
 sudo apt install -y astrometry.net
 
 sudo apt install -y sextractor || sudo apt install -y source-extractor
-sudo apt install pipx
+
 
 # ASTAP
 https://www.hnsky.org/astap.htm
