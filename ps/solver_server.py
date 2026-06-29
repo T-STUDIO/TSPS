@@ -886,20 +886,34 @@ def astap_download_worker(num, url, pattern, is_zip):
             response = opener.open(req_drive, timeout=30)
             
             confirm_token = None
-            for key_header, val_header in response.headers.items():
-                if key_header.lower() == 'set-cookie' and 'download_warning' in val_header:
-                    m_cookie = re.search(r'download_warning[^=]*=([^;]+)', val_header)
-                    if m_cookie:
-                        confirm_token = m_cookie.group(1)
-                        logger.info(f"Found Google Drive confirm token from cookie: {confirm_token}")
-                        break
+            # 1. CookieJarからトークンを検索
+            for cookie in cj:
+                if cookie.name.startswith('download_warning'):
+                    confirm_token = cookie.value
+                    logger.info(f"Found Google Drive confirm token from CookieJar: {confirm_token}")
+                    break
+            
+            # 2. レスポンスヘッダーのSet-Cookieからトークンを検索
+            if not confirm_token:
+                for key_header, val_header in response.headers.items():
+                    if key_header.lower() == 'set-cookie' and 'download_warning' in val_header:
+                        m_cookie = re.search(r'download_warning[^=]*=([^;]+)', val_header)
+                        if m_cookie:
+                            confirm_token = m_cookie.group(1)
+                            logger.info(f"Found Google Drive confirm token from response Set-Cookie: {confirm_token}")
+                            break
             
             content_type = response.headers.get('content-type', '')
             if not confirm_token and 'html' in content_type.lower():
                 html_content_bytes = response.read()
                 html_content = html_content_bytes.decode('utf-8', errors='ignore')
                 
-                m_conf = re.search(r'confirm=([A-Za-z0-9_-]+)', html_content)
+                # HTML内の様々なパターンからトークンを検索
+                m_conf = re.search(r'confirm=([^&"\'\s>]+)', html_content)
+                if not m_conf:
+                    m_conf = re.search(r'<input\s+[^>]*name=["\']confirm["\'][^>]*value=["\']([^"\']+)["\']', html_content)
+                if not m_conf:
+                    m_conf = re.search(r'<input\s+[^>]*value=["\']([^"\']+)["\'][^>]*name=["\']confirm["\']', html_content)
                 if not m_conf:
                     m_conf = re.search(r'value="([A-Za-z0-9_-]+)"\s+name="confirm"', html_content)
                 if not m_conf:
@@ -907,13 +921,14 @@ def astap_download_worker(num, url, pattern, is_zip):
                 if not m_conf:
                     m_href = re.search(r'href="(/uc\?export=download[^"]+)"', html_content)
                     if m_href:
-                        m_token = re.search(r'confirm=([A-Za-z0-9_-]+)', m_href.group(1))
+                        m_token = re.search(r'confirm=([^&"\'\s>]+)', m_href.group(1))
                         if m_token:
                             m_conf = m_token
                 
                 if m_conf:
-                    confirm_token = m_conf.group(1)
-                    logger.info(f"Found Google Drive confirm token from HTML: {confirm_token}")
+                    raw_token = m_conf.group(1)
+                    confirm_token = re.split(r'&|;|"', raw_token)[0].strip()
+                    logger.info(f"Found Google Drive confirm token from HTML content: {confirm_token}")
                 else:
                     logger.warning("Google Drive returned HTML but no confirm token found in HTML.")
             
@@ -921,10 +936,30 @@ def astap_download_worker(num, url, pattern, is_zip):
                 confirm_token = confirm_token.replace('&amp;', '').strip()
                 drive_download_url = f"https://docs.google.com/uc?export=download&confirm={confirm_token}&id={gdrive_id}"
                 logger.info(f"Re-requesting Google Drive download with confirm token: {drive_download_url}")
-                req_drive_confirm = urllib.request.Request(drive_download_url, headers=gdrive_headers)
+                
+                # 手動でCookieをヘッダーに追加して確実に送信する
+                gdrive_confirm_headers = dict(gdrive_headers)
+                cookies_list = []
+                for cookie in cj:
+                    cookies_list.append(f"{cookie.name}={cookie.value}")
+                
+                # Set-Cookieヘッダーからも手動抽出して追加
+                for key_header, val_header in response.headers.items():
+                    if key_header.lower() == 'set-cookie':
+                        parts = val_header.split(';')
+                        if parts:
+                            cookie_part = parts[0].strip()
+                            if cookie_part and cookie_part not in cookies_list:
+                                cookies_list.append(cookie_part)
+                
+                if cookies_list:
+                    gdrive_confirm_headers['Cookie'] = '; '.join(cookies_list)
+                    logger.info(f"Manually sending Cookie header for confirm download: {gdrive_confirm_headers['Cookie']}")
+                
+                req_drive_confirm = urllib.request.Request(drive_download_url, headers=gdrive_confirm_headers)
                 response = opener.open(req_drive_confirm, timeout=30)
                 html_content_bytes = None
-
+ 
             final_content_type = response.headers.get('content-type', '') if html_content_bytes is None else 'text/html'
             if 'html' in final_content_type.lower():
                 if html_content_bytes is None:
