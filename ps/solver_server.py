@@ -740,15 +740,15 @@ INDEX_METADATA = [
 ]
 
 ASTAP_INDEX_METADATA = [
-    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://www.hnsky.org/d80_v18.zip", "is_zip": True},
-    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://www.hnsky.org/d50_v18.zip", "is_zip": True},
-    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://www.hnsky.org/v50_v18.zip", "is_zip": True},
-    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://www.hnsky.org/d20_v18.zip", "is_zip": True},
-    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://www.hnsky.org/d05_v18.zip", "is_zip": True},
-    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://www.hnsky.org/v05_v18.zip", "is_zip": True},
-    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://www.hnsky.org/g05_v18.zip", "is_zip": True},
-    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://www.hnsky.org/w08_v18.zip", "is_zip": True},
-    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MB", "pattern": "hyperleda.*", "url": "https://www.hnsky.org/hyperleda.zip", "is_zip": True}
+    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d80_star_database_mag16_astap.zip/download", "is_zip": True},
+    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d50_star_database_mag15_astap.zip/download", "is_zip": True},
+    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/v50_star_database_mag15_astap.zip/download", "is_zip": True},
+    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d20_star_database_mag13_astap.zip/download", "is_zip": True},
+    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d05_star_database_mag11_astap.zip/download", "is_zip": True},
+    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/v05_star_database_mag11_astap.zip/download", "is_zip": True},
+    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/g05_star_database_mag11_astap.zip/download", "is_zip": True},
+    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/w08_star_database_mag08_astap.zip/download", "is_zip": True},
+    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MB", "pattern": "hyperleda.*", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/hyperleda.zip/download", "is_zip": True}
 ]
 
 ASTAP_DOWNLOAD_TASKS = {}
@@ -757,15 +757,26 @@ ASTAP_DIR = "/opt/astap"
 def astap_download_worker(num, url, pattern, is_zip):
     key = num
     download_filename = url.split('/')[-1]
+    if download_filename == "download":
+        parts = url.split('/')
+        if len(parts) >= 2:
+            download_filename = parts[-2]
     target_filepath = os.path.join(ASTAP_DIR, download_filename)
     try:
         if not os.path.exists(ASTAP_DIR):
             os.makedirs(ASTAP_DIR, exist_ok=True)
             
+        class CustomHTTPRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+                new_req = super().redirect_request(req, fp, code, msg, hdrs, newurl)
+                if new_req:
+                    new_req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+                return new_req
+
         import ssl
         context = ssl._create_unverified_context()
-        # リダイレクト時にUser-Agentヘッダーを失わないよう、グローバルopenerをインストール
-        opener = urllib.request.build_opener()
+        # リダイレクト時にUser-Agentヘッダーを失わないよう、カスタムリダイレクトハンドラを組み込んだグローバルopenerをインストール
+        opener = urllib.request.build_opener(CustomHTTPRedirectHandler())
         opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
         urllib.request.install_opener(opener)
         
@@ -2295,6 +2306,8 @@ def load_solver_config():
                 data = json.load(f)
                 config = DEFAULT_CONFIG.copy()
                 config.update(data)
+                if config.get("solver_type") == "astap":
+                    config["solver_type"] = "astrometry"
                 return config
         except Exception as e:
             logger.error(f"Failed to load solver config: {e}")
