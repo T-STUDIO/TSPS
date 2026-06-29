@@ -21,6 +21,8 @@ sudo apt install pipx
 
 pipx ensurepath
 
+pipx install gdown
+
 pipx install uvicorn
 
 pipx inject uvicorn fastapi python-multipart Pillow numpy astropy
