@@ -298,7 +298,15 @@ def parse_constants_ts():
         logger.error(f"Error parsing constants.ts: {e}")
     return objects
 
+_cached_db = None
+_db_last_load_time = 0
+
 def load_astro_db():
+    global _cached_db, _db_last_load_time
+    current_time = time.time()
+    if _cached_db is not None and (current_time - _db_last_load_time) < 3600:
+        return _cached_db
+
     local_db = []
     if os.path.exists(DB_FILE):
         try:
@@ -345,6 +353,8 @@ def load_astro_db():
     except Exception as e:
         logger.error(f"Failed to write to DB_FILE: {e}")
         
+    _cached_db = local_db
+    _db_last_load_time = current_time
     return local_db
 
 def create_dummy_onnx_model(path):
@@ -648,6 +658,64 @@ def get_file_size_desc(filepath_or_list):
     except:
         return "0 B"
 
+# Directory list caching to speed up index scanning and startup
+class DirListCache:
+    def __init__(self, ttl=5.0):
+        self.ttl = ttl
+        self._cache = {}  # dir_path -> (timestamp, list_of_filenames)
+        self._exists_cache = {}  # filepath -> (timestamp, exists_bool)
+
+    def listdir(self, dir_path):
+        now = time.time()
+        if dir_path in self._cache:
+            ts, filenames = self._cache[dir_path]
+            if now - ts < self.ttl:
+                return filenames
+        
+        try:
+            if os.path.exists(dir_path):
+                filenames = os.listdir(dir_path)
+            else:
+                filenames = []
+        except Exception as e:
+            logger.error(f"Error listing directory {dir_path}: {e}")
+            filenames = []
+            
+        self._cache[dir_path] = (now, filenames)
+        return filenames
+
+    def exists(self, filepath):
+        now = time.time()
+        if filepath in self._exists_cache:
+            ts, val = self._exists_cache[filepath]
+            if now - ts < self.ttl:
+                return val
+        val = os.path.exists(filepath)
+        self._exists_cache[filepath] = (now, val)
+        return val
+
+    def invalidate(self, dir_path=None):
+        if dir_path is None:
+            self._cache.clear()
+            self._exists_cache.clear()
+        else:
+            self._cache.pop(dir_path, None)
+            # Also clear any exists checks that start with dir_path
+            keys_to_remove = [k for k in self._exists_cache if k.startswith(dir_path)]
+            for k in keys_to_remove:
+                self._exists_cache.pop(k, None)
+
+dir_list_cache = DirListCache(ttl=5.0)
+
+def cached_glob(dir_path, pattern):
+    import fnmatch
+    filenames = dir_list_cache.listdir(dir_path)
+    matched = []
+    for f in filenames:
+        if fnmatch.fnmatch(f, pattern):
+            matched.append(os.path.join(dir_path, f))
+    return matched
+
 INDEX_METADATA = [
     {"num": "4119", "fov": "23.3° - 33.3°", "size_desc": "141 KB", "pattern": "index-4119.fits", "url": "http://data.astrometry.net/4100/index-4119.fits"},
     {"num": "4118", "fov": "16.7° - 23.3°", "size_desc": "183 KB", "pattern": "index-4118.fits", "url": "http://data.astrometry.net/4100/index-4118.fits"},
@@ -760,6 +828,7 @@ def astap_download_worker(num, url, pattern, is_zip):
                 
                 ASTAP_DOWNLOAD_TASKS[key]["status"] = "completed"
                 ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
+                dir_list_cache.invalidate(ASTAP_DIR)
             else:
                 if os.path.exists(target_filepath):
                     os.remove(target_filepath)
@@ -817,6 +886,7 @@ def download_worker(dir_path, num, url, filename):
                     logger.warning(f"Failed to chmod file {target_filepath}: {pe}")
                 DOWNLOAD_TASKS[key]["status"] = "completed"
                 DOWNLOAD_TASKS[key]["progress"] = 100
+                dir_list_cache.invalidate(dir_path)
             else:
                 if os.path.exists(target_filepath):
                     os.remove(target_filepath)
@@ -853,8 +923,7 @@ async def api_scanned_indices(path: str):
         
         actual_files = []
         if exists:
-            search_pattern = os.path.join(path, pattern)
-            actual_files = glob.glob(search_pattern)
+            actual_files = cached_glob(path, pattern)
             
         installed = len(actual_files) > 0
         actual_size_desc = ""
@@ -965,6 +1034,7 @@ async def api_delete_index(request: Request):
     if key in DOWNLOAD_TASKS:
         DOWNLOAD_TASKS.pop(key, None)
         
+    dir_list_cache.invalidate(path)
     return {
         "status": "completed",
         "deleted_count": deleted_count,
@@ -973,7 +1043,7 @@ async def api_delete_index(request: Request):
 
 @app.get("/api/scanned_astap_indices")
 async def api_scanned_astap_indices():
-    exists = os.path.exists(ASTAP_DIR)
+    exists = dir_list_cache.exists(ASTAP_DIR)
     writable = False
     err_msg = ""
     if exists:
@@ -991,6 +1061,7 @@ async def api_scanned_astap_indices():
             os.makedirs(ASTAP_DIR, exist_ok=True)
             exists = True
             writable = True
+            dir_list_cache.invalidate(ASTAP_DIR)
         except Exception as e:
             err_msg = "ディレクトリが存在せず、作成にも失敗しました: " + str(e)
 
@@ -1003,11 +1074,20 @@ async def api_scanned_astap_indices():
         if exists:
             import fnmatch
             try:
-                all_files = os.listdir(ASTAP_DIR)
+                all_files = dir_list_cache.listdir(ASTAP_DIR)
+                base_prefix = pattern.split('*')[0].lower() if '*' in pattern else pattern.lower()
                 for f in all_files:
                     if f.endswith(".zip") or f.endswith(".tmp") or f.endswith(".download"):
                         continue
+                    is_match = False
                     if fnmatch.fnmatch(f.lower(), pattern.lower()):
+                        is_match = True
+                    elif base_prefix and f.lower().startswith(base_prefix):
+                        _, ext = os.path.splitext(f)
+                        if ext and ext.lower() not in ['.zip', '.tmp', '.download']:
+                            is_match = True
+                            
+                    if is_match:
                         actual_files.append(os.path.join(ASTAP_DIR, f))
             except Exception as e:
                 logger.error(f"Error filtering files in ASTAP_DIR for {num}: {e}")
@@ -1099,12 +1179,31 @@ async def api_delete_astap_index(request: Request):
         raise HTTPException(status_code=404, detail="ASTAP index meta not found")
         
     pattern = meta["pattern"]
-    search_pattern = os.path.join(ASTAP_DIR, pattern)
-    files = glob.glob(search_pattern)
-    
+    base_prefix = pattern.split('*')[0].lower() if '*' in pattern else pattern.lower()
+    files_to_delete = []
+    if os.path.exists(ASTAP_DIR):
+        try:
+            import fnmatch
+            all_files = os.listdir(ASTAP_DIR)
+            for f in all_files:
+                if f.endswith(".zip") or f.endswith(".tmp") or f.endswith(".download"):
+                    continue
+                is_match = False
+                if fnmatch.fnmatch(f.lower(), pattern.lower()):
+                    is_match = True
+                elif base_prefix and f.lower().startswith(base_prefix):
+                    _, ext = os.path.splitext(f)
+                    if ext and ext.lower() not in ['.zip', '.tmp', '.download']:
+                        is_match = True
+                
+                if is_match:
+                    files_to_delete.append(os.path.join(ASTAP_DIR, f))
+        except Exception as e:
+            logger.error(f"Error scanning ASTAP_DIR for deletion: {e}")
+            
     deleted_count = 0
     errors = []
-    for f in files:
+    for f in files_to_delete:
         try:
             os.remove(f)
             deleted_count += 1
@@ -1114,6 +1213,7 @@ async def api_delete_astap_index(request: Request):
     if num in ASTAP_DOWNLOAD_TASKS:
         ASTAP_DOWNLOAD_TASKS.pop(num, None)
         
+    dir_list_cache.invalidate(ASTAP_DIR)
     return {
         "status": "completed",
         "deleted_count": deleted_count,
