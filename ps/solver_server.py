@@ -863,6 +863,7 @@ def astap_download_worker(num, url, pattern, is_zip):
             logger.warning(f"Failed dynamically resolving URL for {num} (will fallback to meta URL): {re_err}")
 
         import io
+        import sys
         gdrive_id = None
         if "drive.google.com" in resolved_url or "docs.google.com" in resolved_url:
             m = re.search(r'/file/d/([A-Za-z0-9_-]+)', resolved_url)
@@ -873,143 +874,180 @@ def astap_download_worker(num, url, pattern, is_zip):
                 if m:
                     gdrive_id = m.group(1)
 
-        html_content_bytes = None
+        download_completed_via_gdown = False
         if gdrive_id:
-            logger.info(f"Using Google Drive Downloader for {num} (File ID: {gdrive_id})...")
-            drive_base_url = f"https://docs.google.com/uc?export=download&id={gdrive_id}"
-            
-            gdrive_headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*'
-            }
-            req_drive = urllib.request.Request(drive_base_url, headers=gdrive_headers)
-            response = opener.open(req_drive, timeout=30)
-            
-            confirm_token = None
-            # 1. CookieJarからトークンを検索
-            for cookie in cj:
-                if cookie.name.startswith('download_warning'):
-                    confirm_token = cookie.value
-                    logger.info(f"Found Google Drive confirm token from CookieJar: {confirm_token}")
-                    break
-            
-            # 2. レスポンスヘッダーのSet-Cookieからトークンを検索
-            if not confirm_token:
-                for key_header, val_header in response.headers.items():
-                    if key_header.lower() == 'set-cookie' and 'download_warning' in val_header:
-                        m_cookie = re.search(r'download_warning[^=]*=([^;]+)', val_header)
-                        if m_cookie:
-                            confirm_token = m_cookie.group(1)
-                            logger.info(f"Found Google Drive confirm token from response Set-Cookie: {confirm_token}")
-                            break
-            
-            content_type = response.headers.get('content-type', '')
-            if not confirm_token and 'html' in content_type.lower():
-                html_content_bytes = response.read()
-                html_content = html_content_bytes.decode('utf-8', errors='ignore')
-                
-                # HTML内の様々なパターンからトークンを検索
-                m_conf = re.search(r'confirm=([^&"\'\s>]+)', html_content)
-                if not m_conf:
-                    m_conf = re.search(r'<input\s+[^>]*name=["\']confirm["\'][^>]*value=["\']([^"\']+)["\']', html_content)
-                if not m_conf:
-                    m_conf = re.search(r'<input\s+[^>]*value=["\']([^"\']+)["\'][^>]*name=["\']confirm["\']', html_content)
-                if not m_conf:
-                    m_conf = re.search(r'value="([A-Za-z0-9_-]+)"\s+name="confirm"', html_content)
-                if not m_conf:
-                    m_conf = re.search(r'name="confirm"\s+value="([A-Za-z0-9_-]+)"', html_content)
-                if not m_conf:
-                    m_href = re.search(r'href="(/uc\?export=download[^"]+)"', html_content)
-                    if m_href:
-                        m_token = re.search(r'confirm=([^&"\'\s>]+)', m_href.group(1))
-                        if m_token:
-                            m_conf = m_token
-                
-                if m_conf:
-                    raw_token = m_conf.group(1)
-                    confirm_token = re.split(r'&|;|"', raw_token)[0].strip()
-                    logger.info(f"Found Google Drive confirm token from HTML content: {confirm_token}")
-                else:
-                    logger.warning("Google Drive returned HTML but no confirm token found in HTML.")
-            
-            if confirm_token:
-                confirm_token = confirm_token.replace('&amp;', '').strip()
-                drive_download_url = f"https://docs.google.com/uc?export=download&confirm={confirm_token}&id={gdrive_id}"
-                logger.info(f"Re-requesting Google Drive download with confirm token: {drive_download_url}")
-                
-                # 手動でCookieをヘッダーに追加して確実に送信する
-                gdrive_confirm_headers = dict(gdrive_headers)
-                cookies_list = []
-                for cookie in cj:
-                    cookies_list.append(f"{cookie.name}={cookie.value}")
-                
-                # Set-Cookieヘッダーからも手動抽出して追加
-                for key_header, val_header in response.headers.items():
-                    if key_header.lower() == 'set-cookie':
-                        parts = val_header.split(';')
-                        if parts:
-                            cookie_part = parts[0].strip()
-                            if cookie_part and cookie_part not in cookies_list:
-                                cookies_list.append(cookie_part)
-                
-                if cookies_list:
-                    gdrive_confirm_headers['Cookie'] = '; '.join(cookies_list)
-                    logger.info(f"Manually sending Cookie header for confirm download: {gdrive_confirm_headers['Cookie']}")
-                
-                req_drive_confirm = urllib.request.Request(drive_download_url, headers=gdrive_confirm_headers)
-                response = opener.open(req_drive_confirm, timeout=30)
-                html_content_bytes = None
- 
-            final_content_type = response.headers.get('content-type', '') if html_content_bytes is None else 'text/html'
-            if 'html' in final_content_type.lower():
-                if html_content_bytes is None:
-                    html_content_bytes = response.read()
-                html_text = html_content_bytes.decode('utf-8', errors='ignore')
-                logger.error(f"Google Drive returned HTML block instead of binary file for {num}. Preview text: {html_text[:500]}")
-                raise Exception("Google Drive returned HTML preview page instead of the binary package. The download limit might be reached or Google blocked the automated download. Please try again.")
-            
-            cd = response.headers.get('content-disposition', '')
-            if 'filename=' in cd:
-                m_fn = re.search(r'filename=["\']?([^"\';]+)["\']?', cd)
-                if m_fn:
-                    download_filename = m_fn.group(1)
-                    target_filepath = os.path.join(user_download_dir, download_filename)
-                    logger.info(f"Extracted real filename from response headers: {download_filename}")
-        else:
-            logger.info(f"Using Standard Downloader for {num} from URL: {resolved_url}...")
-            req = urllib.request.Request(resolved_url, headers=headers)
-            response = opener.open(req, timeout=30)
-            
-            url_path = urllib.parse.urlparse(resolved_url).path
-            parsed_filename = url_path.split('/')[-1]
-            if parsed_filename and (parsed_filename.endswith('.zip') or parsed_filename.endswith('.deb') or parsed_filename.endswith('.gz') or parsed_filename.endswith('.tar')):
-                download_filename = parsed_filename
-                target_filepath = os.path.join(user_download_dir, download_filename)
+            logger.info(f"Using gdown for Google Drive file ID: {gdrive_id}...")
+            try:
+                import gdown
+            except ImportError:
+                logger.info("gdown not found in python environment. Attempting to install it via pip...")
+                try:
+                    import subprocess
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown"])
+                    import gdown
+                except Exception as pip_err:
+                    logger.error(f"Failed to install gdown via pip: {pip_err}")
+                    raise Exception(f"gdown is required for Google Drive downloads but could not be imported or installed: {pip_err}")
 
-        resp_obj = response if html_content_bytes is None else io.BytesIO(html_content_bytes)
-        with resp_obj:
-            total_size = int(response.headers.get('content-length', 0)) if html_content_bytes is None else len(html_content_bytes)
-            chunk_size = 1024 * 64
-            downloaded = 0
+            ASTAP_DOWNLOAD_TASKS[key]["progress"] = 20
+            logger.info(f"Downloading with gdown.download for id {gdrive_id} to {target_filepath}")
             
-            logger.info(f"Downloading to {target_filepath} (Total size: {total_size} bytes) ...")
-            with open(target_filepath, 'wb') as f:
-                while True:
-                    if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("stop", False):
-                        ASTAP_DOWNLOAD_TASKS[key]["status"] = "cancelled"
+            try:
+                # fuzzy=Trueにして、gdownの自動URL/ID解析を最大限活用
+                downloaded_path = gdown.download(id=gdrive_id, output=target_filepath, quiet=True, fuzzy=True)
+                
+                if not downloaded_path or not os.path.exists(target_filepath):
+                    logger.warning("gdown.download with ID failed or returned None. Retrying with full URL...")
+                    downloaded_path = gdown.download(url=resolved_url, output=target_filepath, quiet=True, fuzzy=True)
+                    
+                if downloaded_path and os.path.exists(target_filepath):
+                    logger.info(f"gdown successfully downloaded file to {target_filepath}")
+                    ASTAP_DOWNLOAD_TASKS[key]["progress"] = 100
+                    download_completed_via_gdown = True
+                else:
+                    raise Exception("gdown completed but target file does not exist.")
+            except Exception as gdown_err:
+                logger.error(f"gdown download error: {gdown_err}")
+                raise Exception(f"gdown failed to download the Google Drive file: {gdown_err}")
+
+        if not download_completed_via_gdown:
+            html_content_bytes = None
+            if gdrive_id:
+                logger.info(f"Using Google Drive Downloader for {num} (File ID: {gdrive_id})...")
+                drive_base_url = f"https://docs.google.com/uc?export=download&id={gdrive_id}"
+                
+                gdrive_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': '*/*'
+                }
+                req_drive = urllib.request.Request(drive_base_url, headers=gdrive_headers)
+                response = opener.open(req_drive, timeout=30)
+                
+                confirm_token = None
+                # 1. CookieJarからトークンを検索
+                for cookie in cj:
+                    if cookie.name.startswith('download_warning'):
+                        confirm_token = cookie.value
+                        logger.info(f"Found Google Drive confirm token from CookieJar: {confirm_token}")
                         break
-                    chunk = resp_obj.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        progress = int((downloaded / total_size) * 100)
-                        ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
+                
+                # 2. レスポンスヘッダーのSet-Cookieからトークンを検索
+                if not confirm_token:
+                    for key_header, val_header in response.headers.items():
+                        if key_header.lower() == 'set-cookie' and 'download_warning' in val_header:
+                            m_cookie = re.search(r'download_warning[^=]*=([^;]+)', val_header)
+                            if m_cookie:
+                                confirm_token = m_cookie.group(1)
+                                logger.info(f"Found Google Drive confirm token from response Set-Cookie: {confirm_token}")
+                                break
+                
+                content_type = response.headers.get('content-type', '')
+                if not confirm_token and 'html' in content_type.lower():
+                    html_content_bytes = response.read()
+                    html_content = html_content_bytes.decode('utf-8', errors='ignore')
+                    
+                    # HTML内の様々なパターンからトークンを検索
+                    m_conf = re.search(r'confirm=([^&"\'\s>]+)', html_content)
+                    if not m_conf:
+                        m_conf = re.search(r'<input\s+[^>]*name=["\']confirm["\'][^>]*value=["\']([^"\']+)["\']', html_content)
+                    if not m_conf:
+                        m_conf = re.search(r'<input\s+[^>]*value=["\']([^"\']+)["\'][^>]*name=["\']confirm["\']', html_content)
+                    if not m_conf:
+                        m_conf = re.search(r'value="([A-Za-z0-9_-]+)"\s+name="confirm"', html_content)
+                    if not m_conf:
+                        m_conf = re.search(r'name="confirm"\s+value="([A-Za-z0-9_-]+)"', html_content)
+                    if not m_conf:
+                        m_href = re.search(r'href="(/uc\?export=download[^"]+)"', html_content)
+                        if m_href:
+                            m_token = re.search(r'confirm=([^&"\'\s>]+)', m_href.group(1))
+                            if m_token:
+                                m_conf = m_token
+                    
+                    if m_conf:
+                        raw_token = m_conf.group(1)
+                        confirm_token = re.split(r'&|;|"', raw_token)[0].strip()
+                        logger.info(f"Found Google Drive confirm token from HTML content: {confirm_token}")
                     else:
-                        mb_downloaded = downloaded / (1024 * 1024)
-                        progress = min(99, int(mb_downloaded * 2))
-                        ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
+                        logger.warning("Google Drive returned HTML but no confirm token found in HTML.")
+                
+                if confirm_token:
+                    confirm_token = confirm_token.replace('&amp;', '').strip()
+                    drive_download_url = f"https://docs.google.com/uc?export=download&confirm={confirm_token}&id={gdrive_id}"
+                    logger.info(f"Re-requesting Google Drive download with confirm token: {drive_download_url}")
+                    
+                    # 手動でCookieをヘッダーに追加して確実に送信する
+                    gdrive_confirm_headers = dict(gdrive_headers)
+                    cookies_list = []
+                    for cookie in cj:
+                        cookies_list.append(f"{cookie.name}={cookie.value}")
+                    
+                    # Set-Cookieヘッダーからも手動抽出して追加
+                    for key_header, val_header in response.headers.items():
+                        if key_header.lower() == 'set-cookie':
+                            parts = val_header.split(';')
+                            if parts:
+                                cookie_part = parts[0].strip()
+                                if cookie_part and cookie_part not in cookies_list:
+                                    cookies_list.append(cookie_part)
+                    
+                    if cookies_list:
+                        gdrive_confirm_headers['Cookie'] = '; '.join(cookies_list)
+                        logger.info(f"Manually sending Cookie header for confirm download: {gdrive_confirm_headers['Cookie']}")
+                    
+                    req_drive_confirm = urllib.request.Request(drive_download_url, headers=gdrive_confirm_headers)
+                    response = opener.open(req_drive_confirm, timeout=30)
+                    html_content_bytes = None
+     
+                final_content_type = response.headers.get('content-type', '') if html_content_bytes is None else 'text/html'
+                if 'html' in final_content_type.lower():
+                    if html_content_bytes is None:
+                        html_content_bytes = response.read()
+                    html_text = html_content_bytes.decode('utf-8', errors='ignore')
+                    logger.error(f"Google Drive returned HTML block instead of binary file for {num}. Preview text: {html_text[:500]}")
+                    raise Exception("Google Drive returned HTML preview page instead of the binary package. The download limit might be reached or Google blocked the automated download. Please try again.")
+                
+                cd = response.headers.get('content-disposition', '')
+                if 'filename=' in cd:
+                    m_fn = re.search(r'filename=["\']?([^"\';]+)["\']?', cd)
+                    if m_fn:
+                        download_filename = m_fn.group(1)
+                        target_filepath = os.path.join(user_download_dir, download_filename)
+                        logger.info(f"Extracted real filename from response headers: {download_filename}")
+            else:
+                logger.info(f"Using Standard Downloader for {num} from URL: {resolved_url}...")
+                req = urllib.request.Request(resolved_url, headers=headers)
+                response = opener.open(req, timeout=30)
+                
+                url_path = urllib.parse.urlparse(resolved_url).path
+                parsed_filename = url_path.split('/')[-1]
+                if parsed_filename and (parsed_filename.endswith('.zip') or parsed_filename.endswith('.deb') or parsed_filename.endswith('.gz') or parsed_filename.endswith('.tar')):
+                    download_filename = parsed_filename
+                    target_filepath = os.path.join(user_download_dir, download_filename)
+
+            resp_obj = response if html_content_bytes is None else io.BytesIO(html_content_bytes)
+            with resp_obj:
+                total_size = int(response.headers.get('content-length', 0)) if html_content_bytes is None else len(html_content_bytes)
+                chunk_size = 1024 * 64
+                downloaded = 0
+                
+                logger.info(f"Downloading to {target_filepath} (Total size: {total_size} bytes) ...")
+                with open(target_filepath, 'wb') as f:
+                    while True:
+                        if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                            ASTAP_DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                            break
+                        chunk = resp_obj.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress = int((downloaded / total_size) * 100)
+                            ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
+                        else:
+                            mb_downloaded = downloaded / (1024 * 1024)
+                            progress = min(99, int(mb_downloaded * 2))
+                            ASTAP_DOWNLOAD_TASKS[key]["progress"] = progress
                         
             if ASTAP_DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
                 if not os.path.exists(ASTAP_DIR):
