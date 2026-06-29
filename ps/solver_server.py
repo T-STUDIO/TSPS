@@ -740,15 +740,15 @@ INDEX_METADATA = [
 ]
 
 ASTAP_INDEX_METADATA = [
-    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d80_star_database_mag16_astap.zip/download", "is_zip": True},
-    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d50_star_database_mag15_astap.zip/download", "is_zip": True},
-    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/v50_star_database_mag15_astap.zip/download", "is_zip": True},
-    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d20_star_database_mag13_astap.zip/download", "is_zip": True},
-    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/d05_star_database_mag11_astap.zip/download", "is_zip": True},
-    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/v05_star_database_mag11_astap.zip/download", "is_zip": True},
-    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/g05_star_database_mag11_astap.zip/download", "is_zip": True},
-    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/w08_star_database_mag08_astap.zip/download", "is_zip": True},
-    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MB", "pattern": "hyperleda.*", "url": "https://sourceforge.net/projects/astap-program/files/star_databases/hyperleda.zip/download", "is_zip": True}
+    {"num": "D80", "fov": "0.15° - 5.0°", "size_desc": "1.25 GB", "pattern": "d80_*.500", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d80_star_database_mag16_astap.zip", "is_zip": True},
+    {"num": "D50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "d50_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d50_star_database_mag15_astap.zip", "is_zip": True},
+    {"num": "V50", "fov": "0.8° - 15°", "size_desc": "290 MB", "pattern": "v50_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/v50_star_database_mag15_astap.zip", "is_zip": True},
+    {"num": "D20", "fov": "2.0° - 30°", "size_desc": "23 MB", "pattern": "d20_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d20_star_database_mag13_astap.zip", "is_zip": True},
+    {"num": "D05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "d05_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/d05_star_database_mag11_astap.zip", "is_zip": True},
+    {"num": "V05", "fov": "5.0° - 50°", "size_desc": "23 MB", "pattern": "v05_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/v05_star_database_mag11_astap.zip", "is_zip": True},
+    {"num": "G05", "fov": "5.0° - 50°", "size_desc": "24 MB", "pattern": "g05_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/g05_star_database_mag11_astap.zip", "is_zip": True},
+    {"num": "W08", "fov": "8.0° - 120°", "size_desc": "23 MB", "pattern": "w08_*.290", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/w08_star_database_mag08_astap.zip", "is_zip": True},
+    {"num": "hyperleda", "fov": "Any FOV (Galaxies)", "size_desc": "21 MB", "pattern": "hyperleda.*", "url": "https://downloads.sourceforge.net/project/astap-program/star_databases/hyperleda.zip", "is_zip": True}
 ]
 
 ASTAP_DOWNLOAD_TASKS = {}
@@ -766,22 +766,57 @@ def astap_download_worker(num, url, pattern, is_zip):
         if not os.path.exists(ASTAP_DIR):
             os.makedirs(ASTAP_DIR, exist_ok=True)
             
-        class CustomHTTPRedirectHandler(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-                new_req = super().redirect_request(req, fp, code, msg, hdrs, newurl)
-                if new_req:
-                    new_req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-                return new_req
-
+        import urllib.request
+        import urllib.error
+        import urllib.parse
+        import http.cookiejar
         import ssl
+        
         context = ssl._create_unverified_context()
-        # リダイレクト時にUser-Agentヘッダーを失わないよう、カスタムリダイレクトハンドラを組み込んだグローバルopenerをインストール
-        opener = urllib.request.build_opener(CustomHTTPRedirectHandler())
-        opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
+        cj = http.cookiejar.CookieJar()
+        
+        class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def http_error_301(self, req, fp, code, msg, hdrs):
+                return fp
+            def http_error_302(self, req, fp, code, msg, hdrs):
+                return fp
+            def http_error_303(self, req, fp, code, msg, hdrs):
+                return fp
+            def http_error_307(self, req, fp, code, msg, hdrs):
+                return fp
+            def http_error_308(self, req, fp, code, msg, hdrs):
+                return fp
+                
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj), NoRedirectHandler())
         urllib.request.install_opener(opener)
         
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-        with urllib.request.urlopen(req, context=context) as response:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive',
+            'Referer': 'https://sourceforge.net/'
+        }
+        
+        current_url = url
+        response = None
+        for i in range(10):
+            req = urllib.request.Request(current_url, headers=headers)
+            res = urllib.request.urlopen(req, context=context)
+            code = res.getcode()
+            if code in (301, 302, 303, 307, 308):
+                loc = res.info().get('Location')
+                if loc:
+                    current_url = urllib.parse.urljoin(current_url, loc)
+                    res.close()
+                    continue
+            response = res
+            break
+            
+        if response is None:
+            raise Exception("Failed to follow redirect to a final URL")
+            
+        with response:
             total_size = int(response.headers.get('content-length', 0))
             chunk_size = 1024 * 64
             downloaded = 0
@@ -2047,6 +2082,7 @@ async def index():
                     </div>
                     <button type="button" class="solve-btn" style="background:#059669; margin-top:16px;" onclick="trainAI()">TRAIN AI MODEL & SYNC DATABASE</button>
                 </div>
+                <button type="button" class="solve-btn" style="background:#2563eb; margin-bottom:10px;" onclick="triggerSaveSettings()">SAVE SETTINGS</button>
                 <button type="button" class="solve-btn" onclick="runSolve()">PLATE SOLVE</button>
             </form>
             <div class="section-title">Log</div>
@@ -2080,6 +2116,16 @@ async def index():
                     }
                 } catch(e) {
                     out.innerText = "Error resolving: " + e;
+                }
+            }
+            async function triggerSaveSettings() {
+                const out = document.getElementById('out');
+                out.innerText = "Saving settings to server...";
+                try {
+                    await saveSettings();
+                    out.innerText = "Settings saved successfully to server.\n";
+                } catch(e) {
+                    out.innerText = "Error saving settings: " + e;
                 }
             }
             async function saveSettings() {
