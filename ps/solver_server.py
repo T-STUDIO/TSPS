@@ -1928,6 +1928,8 @@ async def index_manager():
 
                 if (type === "astrometry") {
                     tabAstrometry.className = "btn btn-blue";
+                    tabAstrometry.style.background = "";
+                    tabAstrometry.style.color = "";
                     tabAstap.className = "btn";
                     tabAstap.style.background = "#4b5563";
                     tabAstap.style.color = "white";
@@ -2098,6 +2100,10 @@ async def index_manager():
                         badgeClass = "badge-downloading";
                         badgeText = "展開中...";
                         isDisable = "disabled";
+                    } else if (item.status === "installing") {
+                        badgeClass = "badge-downloading";
+                        badgeText = "インストール中...";
+                        isDisable = "disabled";
                     } else if (item.status === "failed") {
                         badgeClass = "badge-error";
                         badgeText = "DL失敗";
@@ -2123,7 +2129,7 @@ async def index_manager():
                             <div class="fov-tag">対応視野角: <strong>${item.fov}</strong></div>
                             <div class="size-tag">サイズ: ${item.installed ? (item.actual_size_desc || item.size_desc) : item.size_desc}</div>
                             
-                            <div class="progress-bar-container" id="progress-container-${item.num}" style="display: ${(item.status === 'downloading' || item.status === 'extracting') ? 'block' : 'none'}">
+                            <div class="progress-bar-container" id="progress-container-${item.num}" style="display: ${(item.status === 'downloading' || item.status === 'extracting' || item.status === 'installing') ? 'block' : 'none'}">
                                 <div class="progress-bar-fill" id="progress-fill-${item.num}" style="width: ${item.progress}%"></div>
                             </div>
                             ${errorBlock}
