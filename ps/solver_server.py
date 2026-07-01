@@ -1174,59 +1174,104 @@ DOWNLOAD_TASKS = {}
 
 def download_worker(dir_path, num, url, filename):
     key = (dir_path, num)
-    download_filename = url.split('/')[-1]
-    target_filepath = os.path.join(dir_path, download_filename)
+    
+    # 5200番台（マルチファイルインデックス）の特別対応
+    subfiles_count = {
+        "5206": 12,
+        "5205": 48,
+        "5204": 48,
+        "5203": 48,
+        "5202": 48,
+        "5201": 48,
+        "5200": 48
+    }
+    
+    if num in subfiles_count:
+        count = subfiles_count[num]
+        urls_and_filenames = []
+        for i in range(count):
+            sub_name = f"index-{num}-{i:02d}.fits"
+            sub_url = f"http://data.astrometry.net/5200/{sub_name}"
+            urls_and_filenames.append((sub_url, sub_name))
+    else:
+        download_filename = url.split('/')[-1]
+        urls_and_filenames = [(url, download_filename)]
+        
+    downloaded_files = []
+    
     try:
         if not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
             
         import ssl
         context = ssl._create_unverified_context()
-        # リダイレクト時にUser-Agentヘッダーを失わないよう、グローバルopenerをインストール
         opener = urllib.request.build_opener()
         opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
         urllib.request.install_opener(opener)
         
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-        with urllib.request.urlopen(req, context=context) as response:
-            total_size = int(response.headers.get('content-length', 0))
-            chunk_size = 1024 * 64
-            downloaded = 0
+        total_files = len(urls_and_filenames)
+        
+        for idx, (sub_url, sub_name) in enumerate(urls_and_filenames):
+            if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                break
+                
+            target_filepath = os.path.join(dir_path, sub_name)
+            downloaded_files.append(target_filepath)
             
-            with open(target_filepath, 'wb') as f:
-                while True:
-                    if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
-                        DOWNLOAD_TASKS[key]["status"] = "cancelled"
-                        break
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        progress = int((downloaded / total_size) * 100)
-                        DOWNLOAD_TASKS[key]["progress"] = progress
-                    else:
-                        DOWNLOAD_TASKS[key]["progress"] = 50
+            req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+            with urllib.request.urlopen(req, context=context) as response:
+                total_size = int(response.headers.get('content-length', 0))
+                chunk_size = 1024 * 64
+                downloaded = 0
+                
+                with open(target_filepath, 'wb') as f:
+                    while True:
+                        if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                            DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                            break
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
                         
-            if DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+                        # 個別の進捗
+                        sub_progress = 0
+                        if total_size > 0:
+                            sub_progress = downloaded / total_size
+                        else:
+                            sub_progress = 0.5
+                            
+                        # 全体の進捗計算
+                        overall_progress = int(((idx + sub_progress) / total_files) * 100)
+                        DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
+                
+                if DOWNLOAD_TASKS.get(key, {}).get("status") == "cancelled":
+                    break
+                    
                 try:
                     os.chmod(target_filepath, 0o777)
                 except Exception as pe:
                     logger.warning(f"Failed to chmod file {target_filepath}: {pe}")
-                DOWNLOAD_TASKS[key]["status"] = "completed"
-                DOWNLOAD_TASKS[key]["progress"] = 100
-                dir_list_cache.invalidate(dir_path)
-            else:
-                if os.path.exists(target_filepath):
-                    os.remove(target_filepath)
+                    
+        if DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+            DOWNLOAD_TASKS[key]["status"] = "completed"
+            DOWNLOAD_TASKS[key]["progress"] = 100
+            dir_list_cache.invalidate(dir_path)
+        else:
+            for fp in downloaded_files:
+                if os.path.exists(fp):
+                    try: os.remove(fp)
+                    except: pass
     except Exception as e:
         logger.error(f"Download Error for {filename}: {e}")
         DOWNLOAD_TASKS[key]["status"] = "failed"
         DOWNLOAD_TASKS[key]["err_msg"] = str(e)
-        if os.path.exists(target_filepath):
-            try: os.remove(target_filepath)
-            except: pass
+        for fp in downloaded_files:
+            if os.path.exists(fp):
+                try: os.remove(fp)
+                except: pass
 
 @app.get("/api/scanned_indices")
 async def api_scanned_indices(path: str):
