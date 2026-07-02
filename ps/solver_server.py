@@ -1298,6 +1298,31 @@ DOWNLOAD_TASKS = {}
 def download_worker(dir_path, num, url, filename):
     key = (dir_path, num)
     
+    # 経過ログ保存用の配列を初期化
+    if key not in DOWNLOAD_TASKS:
+        DOWNLOAD_TASKS[key] = {
+            "status": "downloading",
+            "progress": 0,
+            "stop": False,
+            "thread": None
+        }
+    DOWNLOAD_TASKS[key]["logs"] = []
+    
+    def log_msg(msg):
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        full_msg = f"[{timestamp}] {msg}"
+        logger.info(full_msg)
+        if "logs" not in DOWNLOAD_TASKS[key]:
+            DOWNLOAD_TASKS[key]["logs"] = []
+        DOWNLOAD_TASKS[key]["logs"].append(full_msg)
+        if len(DOWNLOAD_TASKS[key]["logs"]) > 100:
+            DOWNLOAD_TASKS[key]["logs"].pop(0)
+
+    # 渡された num をクリーン化（プレフィックス除去、スペース除去）して 5200番台のキー判定の不整合を排除
+    clean_num = str(num).replace("index-", "").strip()
+    log_msg(f"インデックス [index-{clean_num}] のダウンロードタスクを開始します。")
+    
     # 5200番台の各サブファイルの直接URL定義。自動生成を避け、事前にすべての個別URLを完全に明文化した配列を用意
     static_urls = {
         "5206": [
@@ -1400,14 +1425,19 @@ def download_worker(dir_path, num, url, filename):
         ]
     }
     
-    if num in static_urls:
+    clean_num = str(num).replace("index-", "").strip()
+    log_msg(f"clean_num を [{clean_num}] と判定しました。")
+    
+    if clean_num in static_urls:
         urls_and_filenames = []
-        for sub_url in static_urls[num]:
+        for sub_url in static_urls[clean_num]:
             sub_name = sub_url.split('/')[-1]
             urls_and_filenames.append((sub_url, sub_name))
+        log_msg(f"5200番台個別URLにマッチ。合計 {len(urls_and_filenames)} 個のファイルをダウンロードします。")
     else:
         download_filename = url.split('/')[-1]
         urls_and_filenames = [(url, download_filename)]
+        log_msg(f"汎用URLとして登録。ファイル: {download_filename}")
         
     try:
         if not os.path.exists(dir_path):
@@ -1418,16 +1448,19 @@ def download_worker(dir_path, num, url, filename):
         for idx, (sub_url, sub_name) in enumerate(urls_and_filenames):
             if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
                 DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                log_msg("ダウンロードタスクがユーザーによりキャンセルされました。")
                 break
                 
             target_filepath = os.path.join(dir_path, sub_name)
             
             # レジューム機能：既に完全なファイルがダウンロード完了している場合はスキップ
             if os.path.exists(target_filepath) and os.path.getsize(target_filepath) > 1024 * 10:
-                logger.info(f"File {sub_name} already exists. Skipping download.")
+                log_msg(f"[{idx+1}/{total_files}] ファイル {sub_name} はダウンロード済みです。スキップ。")
                 overall_progress = int(((idx + 1.0) / total_files) * 100)
                 DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
                 continue
+                
+            log_msg(f"[{idx+1}/{total_files}] {sub_name} のダウンロードを開始します。")
             
             # 通常パスとLITEパスの双方を試行するフォールバック処理
             last_err = None
@@ -1442,11 +1475,14 @@ def download_worker(dir_path, num, url, filename):
             success = False
             for attempt_url in url_candidates:
                 try:
+                    log_msg(f"ダウンロード接続試行 URL: {attempt_url}")
                     success = astap_style_single_download(attempt_url, target_filepath, key, idx, total_files)
                     if success:
+                        log_msg(f"[{idx+1}/{total_files}] {sub_name} ダウンロード成功。")
                         break
                 except Exception as ex:
                     last_err = ex
+                    log_msg(f"[{idx+1}/{total_files}] ダウンロード接続エラー (URL: {attempt_url}): {ex}")
                     part_filepath = target_filepath + ".part"
                     if os.path.exists(part_filepath):
                         try: os.remove(part_filepath)
@@ -1459,19 +1495,21 @@ def download_worker(dir_path, num, url, filename):
         if DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
             DOWNLOAD_TASKS[key]["status"] = "completed"
             DOWNLOAD_TASKS[key]["progress"] = 100
+            log_msg("すべてのダウンロードが完了しました。")
             dir_list_cache.invalidate(dir_path)
             
     except Exception as e:
         import traceback
         err_tb = traceback.format_exc()
+        log_msg(f"ダウンロード失敗: {e}")
         logger.error(f"Download Error for {filename}: {e}\n{err_tb}")
         DOWNLOAD_TASKS[key]["status"] = "failed"
-        if num in ["5200", "5201", "5202", "5203", "5204", "5205", "5206"]:
-            # 改行を削除・要約してブラウザ側のカードに直接表示できるよう整形
+        if clean_num in ["5200", "5201", "5202", "5203", "5204", "5205", "5206"]:
             clean_tb = err_tb.replace('\n', ' | ')
             DOWNLOAD_TASKS[key]["err_msg"] = f"{str(e)} | Details: {clean_tb[:350]}..."
         else:
             DOWNLOAD_TASKS[key]["err_msg"] = str(e)
+
 
 @app.get("/api/scanned_indices")
 async def api_scanned_indices(path: str):
@@ -1524,7 +1562,8 @@ async def api_scanned_indices(path: str):
             "actual_size_desc": actual_size_desc,
             "status": status,
             "progress": progress,
-            "err_msg": task_err
+            "err_msg": task_err,
+            "logs": task.get("logs", [])
         })
 
     return {
@@ -2101,6 +2140,16 @@ async def index_manager():
                 <button id="global-stop-btn" class="btn btn-stop">一時停止</button>
             </div>
 
+            <!-- 詳細経過ログ表示領域 -->
+            <div id="detailed-log-panel" style="margin-top: 20px; background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; display: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div style="font-weight: bold; font-size: 0.9rem; color: #60a5fa; display: flex; align-items: center; gap: 6px;">
+                        <span>📝 ダウンロード経過ログ</span>
+                    </div>
+                </div>
+                <div id="detailed-log-content" style="font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.8rem; line-height: 1.4; max-height: 200px; overflow-y: auto; color: #34d399; white-space: pre-wrap; background: #020617; padding: 10px; border-radius: 6px; border: 1px solid #1e293b;">待機中...</div>
+            </div>
+
             <div class="back-btn-container">
                 <button class="btn btn-blue" style="margin: 0 auto; display: inline-block;" onclick="location.href='/'">コンソールへ戻る</button>
             </div>
@@ -2434,6 +2483,8 @@ async def index_manager():
                 const globalProgress = document.getElementById("global-progress");
                 const stopBtn = document.getElementById("global-stop-btn");
                 const progressTitle = document.getElementById("global-progress-title");
+                const detailedLogPanel = document.getElementById("detailed-log-panel");
+                const detailedLogContent = document.getElementById("detailed-log-content");
                 
                 if (active) {
                     downloadingNum = active.num;
@@ -2447,6 +2498,11 @@ async def index_manager():
                         document.getElementById("global-progress-fill").style.width = active.progress + "%";
                         stopBtn.style.display = "block";
                         stopBtn.onclick = () => stopDownload(active.num);
+                    }
+                    if (active.logs && active.logs.length > 0) {
+                        detailedLogPanel.style.display = "block";
+                        detailedLogContent.textContent = active.logs.join("\n");
+                        detailedLogContent.scrollTop = detailedLogContent.scrollHeight;
                     }
                     startPolling();
                 } else {
@@ -2492,6 +2548,9 @@ async def index_manager():
                         const stopBtn = document.getElementById("global-stop-btn");
                         const progressTitle = document.getElementById("global-progress-title");
 
+                        const detailedLogPanel = document.getElementById("detailed-log-panel");
+                        const detailedLogContent = document.getElementById("detailed-log-content");
+
                         if (active) {
                             globalProgress.style.display = "flex";
                             if (active.status === "extracting") {
@@ -2503,10 +2562,19 @@ async def index_manager():
                                 document.getElementById("global-progress-fill").style.width = active.progress + "%";
                                 stopBtn.style.display = "block";
                             }
+                            if (active.logs && active.logs.length > 0) {
+                                detailedLogPanel.style.display = "block";
+                                detailedLogContent.textContent = active.logs.join("\n");
+                                detailedLogContent.scrollTop = detailedLogContent.scrollHeight;
+                            }
                         } else {
                             clearInterval(pollTimer);
                             pollTimer = null;
                             globalProgress.style.display = "none";
+                            if (detailedLogContent && detailedLogContent.textContent !== "待機中...") {
+                                detailedLogContent.textContent += "\n[INFO] ダウンロードタスクが完了、または停止しました。";
+                                detailedLogContent.scrollTop = detailedLogContent.scrollHeight;
+                            }
                             scanDirectory();
                         }
                     } catch (e) {
