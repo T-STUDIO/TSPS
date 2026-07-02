@@ -1221,8 +1221,30 @@ def download_worker(dir_path, num, url, filename):
             target_filepath = os.path.join(dir_path, sub_name)
             downloaded_files.append(target_filepath)
             
-            req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            with opener.open(req) as response:
+            # 通常パスとLITEパスの双方を試行するフォールバック処理
+            response = None
+            last_err = None
+            url_candidates = [sub_url]
+            if "/LITE/" not in sub_url:
+                parts = sub_url.rsplit('/', 1)
+                if len(parts) == 2:
+                    url_candidates.append(f"{parts[0]}/LITE/{parts[1]}")
+            else:
+                url_candidates.append(sub_url.replace("/LITE/", "/"))
+                
+            for attempt_url in url_candidates:
+                req = urllib.request.Request(attempt_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+                try:
+                    response = opener.open(req)
+                    break
+                except Exception as ex:
+                    last_err = ex
+                    continue
+                    
+            if response is None:
+                raise Exception(f"{last_err} (URL: {sub_url})")
+                
+            with response:
                 total_size = int(response.headers.get('content-length', 0))
                 chunk_size = 1024 * 64
                 downloaded = 0
