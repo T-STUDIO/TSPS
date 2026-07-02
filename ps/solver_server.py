@@ -1287,6 +1287,7 @@ def download_worker(dir_path, num, url, filename):
         urls_and_filenames = [(url, download_filename)]
         
     downloaded_files = []
+    part_filepath = None
     
     try:
         if not os.path.exists(dir_path):
@@ -1296,8 +1297,27 @@ def download_worker(dir_path, num, url, filename):
         import urllib.request
         import urllib.error
         import urllib.parse
+        import http.cookiejar
+        import re
         
         context = ssl._create_unverified_context()
+        cj = http.cookiejar.CookieJar()
+        
+        class CustomRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+                new_req = super().redirect_request(req, fp, code, msg, hdrs, newurl)
+                if new_req:
+                    for k, v in req.headers.items():
+                        if k.lower() not in ['host', 'content-length', 'content-type']:
+                            new_req.add_header(k, v)
+                return new_req
+                
+        https_handler = urllib.request.HTTPSHandler(context=context)
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cj),
+            https_handler,
+            CustomRedirectHandler()
+        )
         
         total_files = len(urls_and_filenames)
         
@@ -1307,7 +1327,15 @@ def download_worker(dir_path, num, url, filename):
                 break
                 
             target_filepath = os.path.join(dir_path, sub_name)
+            part_filepath = target_filepath + ".part"
             downloaded_files.append(target_filepath)
+            
+            # レジューム機能：既に完全なファイルがダウンロード完了している場合はスキップ
+            if os.path.exists(target_filepath) and os.path.getsize(target_filepath) > 1024 * 10:
+                logger.info(f"File {sub_name} already exists. Skipping download.")
+                overall_progress = int(((idx + 1.0) / total_files) * 100)
+                DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
+                continue
             
             # 通常パスとLITEパスの双方を試行するフォールバック処理
             response = None
@@ -1321,17 +1349,20 @@ def download_worker(dir_path, num, url, filename):
                 url_candidates.append(sub_url.replace("/LITE/", "/"))
                 
             for attempt_url in url_candidates:
+                parsed_attempt = urllib.parse.urlparse(attempt_url)
+                attempt_referer = f"{parsed_attempt.scheme}://{parsed_attempt.netloc}/"
                 req = urllib.request.Request(
                     attempt_url, 
                     headers={
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
                         'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-                        'Connection': 'keep-alive'
+                        'Connection': 'keep-alive',
+                        'Referer': attempt_referer
                     }
                 )
                 try:
-                    response = urllib.request.urlopen(req, context=context, timeout=30)
+                    response = opener.open(req, timeout=30)
                     break
                 except Exception as ex:
                     last_err = ex
@@ -1345,7 +1376,7 @@ def download_worker(dir_path, num, url, filename):
                 chunk_size = 1024 * 64
                 downloaded = 0
                 
-                with open(target_filepath, 'wb') as f:
+                with open(part_filepath, 'wb') as f:
                     while True:
                         if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
                             DOWNLOAD_TASKS[key]["status"] = "cancelled"
@@ -1369,6 +1400,12 @@ def download_worker(dir_path, num, url, filename):
                 
                 if DOWNLOAD_TASKS.get(key, {}).get("status") == "cancelled":
                     break
+                
+                # 正常に完了したら .part からリネーム
+                if os.path.exists(part_filepath):
+                    if os.path.exists(target_filepath):
+                        os.remove(target_filepath)
+                    os.rename(part_filepath, target_filepath)
                     
                 try:
                     os.chmod(target_filepath, 0o777)
@@ -1380,18 +1417,18 @@ def download_worker(dir_path, num, url, filename):
             DOWNLOAD_TASKS[key]["progress"] = 100
             dir_list_cache.invalidate(dir_path)
         else:
-            for fp in downloaded_files:
-                if os.path.exists(fp):
-                    try: os.remove(fp)
-                    except: pass
+            # キャンセル時はダウンロード中の .part ファイルのみ削除
+            if part_filepath and os.path.exists(part_filepath):
+                try: os.remove(part_filepath)
+                except: pass
     except Exception as e:
         logger.error(f"Download Error for {filename}: {e}")
         DOWNLOAD_TASKS[key]["status"] = "failed"
         DOWNLOAD_TASKS[key]["err_msg"] = str(e)
-        for fp in downloaded_files:
-            if os.path.exists(fp):
-                try: os.remove(fp)
-                except: pass
+        # エラー時はダウンロード中の .part ファイルのみ削除し、既に成功したものは残す
+        if part_filepath and os.path.exists(part_filepath):
+            try: os.remove(part_filepath)
+            except: pass
 
 @app.get("/api/scanned_indices")
 async def api_scanned_indices(path: str):
