@@ -1296,26 +1296,8 @@ def download_worker(dir_path, num, url, filename):
         import urllib.request
         import urllib.error
         import urllib.parse
-        import http.cookiejar
         
         context = ssl._create_unverified_context()
-        cj = http.cookiejar.CookieJar()
-        
-        class CustomRedirectHandler(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-                new_req = super().redirect_request(req, fp, code, msg, hdrs, newurl)
-                if new_req:
-                    for k, v in req.headers.items():
-                        if k.lower() not in ['host', 'content-length', 'content-type']:
-                            new_req.add_header(k, v)
-                return new_req
-                
-        https_handler = urllib.request.HTTPSHandler(context=context)
-        opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(cj),
-            https_handler,
-            CustomRedirectHandler()
-        )
         
         total_files = len(urls_and_filenames)
         
@@ -1343,11 +1325,13 @@ def download_worker(dir_path, num, url, filename):
                     attempt_url, 
                     headers={
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept': '*/*'
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+                        'Connection': 'keep-alive'
                     }
                 )
                 try:
-                    response = opener.open(req, timeout=30)
+                    response = urllib.request.urlopen(req, context=context, timeout=30)
                     break
                 except Exception as ex:
                     last_err = ex
