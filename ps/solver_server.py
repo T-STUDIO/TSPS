@@ -1293,10 +1293,29 @@ def download_worker(dir_path, num, url, filename):
             os.makedirs(dir_path, exist_ok=True)
             
         import ssl
-        try:
-            ssl._create_default_https_context = ssl._create_unverified_context
-        except:
-            pass
+        import urllib.request
+        import urllib.error
+        import urllib.parse
+        import http.cookiejar
+        
+        context = ssl._create_unverified_context()
+        cj = http.cookiejar.CookieJar()
+        
+        class CustomRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+                new_req = super().redirect_request(req, fp, code, msg, hdrs, newurl)
+                if new_req:
+                    for k, v in req.headers.items():
+                        if k.lower() not in ['host', 'content-length', 'content-type']:
+                            new_req.add_header(k, v)
+                return new_req
+                
+        https_handler = urllib.request.HTTPSHandler(context=context)
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cj),
+            https_handler,
+            CustomRedirectHandler()
+        )
         
         total_files = len(urls_and_filenames)
         
@@ -1328,7 +1347,7 @@ def download_worker(dir_path, num, url, filename):
                     }
                 )
                 try:
-                    response = urllib.request.urlopen(req, timeout=30)
+                    response = opener.open(req, timeout=30)
                     break
                 except Exception as ex:
                     last_err = ex
