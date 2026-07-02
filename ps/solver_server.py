@@ -1210,9 +1210,50 @@ def astap_style_single_download(url, target_filepath, key, idx, total_files):
         'Referer': referer
     }
     
+    is_5200 = "index-5200" in url
+    if is_5200:
+        print(f"\n--- 5200系 接続開始 ({idx + 1}/{total_files}): {url} ---", flush=True)
+        print(f"Request Headers: {headers}", flush=True)
+        
     req = urllib.request.Request(url, headers=headers)
-    response = opener.open(req, timeout=30)
     
+    try:
+        response = opener.open(req, timeout=30)
+        if is_5200:
+            print(f"--- 5200系 接続成功 (HTTP Status: {response.status}) ---", flush=True)
+            print(f"Response Headers: {dict(response.headers)}", flush=True)
+    except Exception as e:
+        if is_5200:
+            import traceback
+            print(f"--- 5200系 接続エラー発生 ---", flush=True)
+            print(f"Error Type: {type(e)}", flush=True)
+            print(f"Error Message: {e}", flush=True)
+            traceback.print_exc()
+            print(f"--- 5200系 シンプルな接続 (フォールバック) を試行します ---", flush=True)
+        
+        # ユーザー環境で動作確認されたシンプルなurllib接続へのフォールバック
+        try:
+            fallback_headers = {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept-Encoding': 'identity',
+                'Connection': 'close'
+            }
+            if is_5200:
+                print(f"Fallback Request URL: {url}", flush=True)
+                print(f"Fallback Headers: {fallback_headers}", flush=True)
+            fallback_req = urllib.request.Request(url, headers=fallback_headers)
+            response = urllib.request.urlopen(fallback_req, context=context, timeout=30)
+            if is_5200:
+                print(f"--- 5200系 フォールバック接続成功 (HTTP Status: {response.status}) ---", flush=True)
+                print(f"Fallback Response Headers: {dict(response.headers)}", flush=True)
+        except Exception as fe:
+            if is_5200:
+                import traceback
+                print(f"--- 5200系 フォールバック接続エラー ---", flush=True)
+                print(f"Fallback Error Message: {fe}", flush=True)
+                traceback.print_exc()
+            raise fe
+            
     with response:
         total_size = int(response.headers.get('content-length', 0))
         chunk_size = 1024 * 64
@@ -1421,9 +1462,16 @@ def download_worker(dir_path, num, url, filename):
             dir_list_cache.invalidate(dir_path)
             
     except Exception as e:
-        logger.error(f"Download Error for {filename}: {e}")
+        import traceback
+        err_tb = traceback.format_exc()
+        logger.error(f"Download Error for {filename}: {e}\n{err_tb}")
         DOWNLOAD_TASKS[key]["status"] = "failed"
-        DOWNLOAD_TASKS[key]["err_msg"] = str(e)
+        if num in ["5200", "5201", "5202", "5203", "5204", "5205", "5206"]:
+            # 改行を削除・要約してブラウザ側のカードに直接表示できるよう整形
+            clean_tb = err_tb.replace('\n', ' | ')
+            DOWNLOAD_TASKS[key]["err_msg"] = f"{str(e)} | Details: {clean_tb[:350]}..."
+        else:
+            DOWNLOAD_TASKS[key]["err_msg"] = str(e)
 
 @app.get("/api/scanned_indices")
 async def api_scanned_indices(path: str):
