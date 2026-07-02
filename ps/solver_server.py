@@ -730,13 +730,13 @@ INDEX_METADATA = [
     {"num": "4109", "fov": "0.70° - 1.0°", "size_desc": "48 MB", "pattern": "index-4109.fits", "url": "http://data.astrometry.net/4100/index-4109.fits"},
     {"num": "4108", "fov": "0.50° - 0.70°", "size_desc": "91 MB", "pattern": "index-4108.fits", "url": "http://data.astrometry.net/4100/index-4108.fits"},
     {"num": "4107", "fov": "0.37° - 0.50°", "size_desc": "158 MB", "pattern": "index-4107.fits", "url": "http://data.astrometry.net/4100/index-4107.fits"},
-    {"num": "5206", "fov": "0.27° - 0.37°", "size_desc": "294 MB", "pattern": "index-5206-*.fits", "url": "http://data.astrometry.net/5200/index-5206.fits"},
-    {"num": "5205", "fov": "0.18° - 0.27°", "size_desc": "587 MB", "pattern": "index-5205-*.fits", "url": "http://data.astrometry.net/5200/index-5205.fits"},
-    {"num": "5204", "fov": "0.13° - 0.18°", "size_desc": "1.2 GB", "pattern": "index-5204-*.fits", "url": "http://data.astrometry.net/5200/index-5204.fits"},
-    {"num": "5203", "fov": "0.067° - 0.093°", "size_desc": "2.3 GB", "pattern": "index-5203-*.fits", "url": "http://data.astrometry.net/5200/index-5203.fits"},
-    {"num": "5202", "fov": "0.093° - 0.13°", "size_desc": "4.6 GB", "pattern": "index-5202-*.fits", "url": "http://data.astrometry.net/5200/index-5202.fits"},
-    {"num": "5201", "fov": "0.033° - 0.047°", "size_desc": "8.9 GB", "pattern": "index-5201-*.fits", "url": "http://data.astrometry.net/5200/index-5201.fits"},
-    {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GB", "pattern": "index-5200-*.fits", "url": "http://data.astrometry.net/5200/index-5200.fits"}
+    {"num": "5206", "fov": "0.27° - 0.37°", "size_desc": "294 MB", "pattern": "index-5206-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206.fits"},
+    {"num": "5205", "fov": "0.18° - 0.27°", "size_desc": "587 MB", "pattern": "index-5205-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205.fits"},
+    {"num": "5204", "fov": "0.13° - 0.18°", "size_desc": "1.2 GB", "pattern": "index-5204-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204.fits"},
+    {"num": "5203", "fov": "0.067° - 0.093°", "size_desc": "2.3 GB", "pattern": "index-5203-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203.fits"},
+    {"num": "5202", "fov": "0.093° - 0.13°", "size_desc": "4.6 GB", "pattern": "index-5202-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202.fits"},
+    {"num": "5201", "fov": "0.033° - 0.047°", "size_desc": "8.9 GB", "pattern": "index-5201-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201.fits"},
+    {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GB", "pattern": "index-5200-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200.fits"}
 ]
 
 ASTAP_INDEX_METADATA = [
@@ -1177,7 +1177,7 @@ def download_worker(dir_path, num, url, filename):
     
     # 5200番台（マルチファイルインデックス）の特別対応
     subfiles_count = {
-        "5206": 12,
+        "5206": 48,
         "5205": 48,
         "5204": 48,
         "5203": 48,
@@ -1189,9 +1189,10 @@ def download_worker(dir_path, num, url, filename):
     if num in subfiles_count:
         count = subfiles_count[num]
         urls_and_filenames = []
+        base_url = url.rsplit('/', 1)[0]
         for i in range(count):
             sub_name = f"index-{num}-{i:02d}.fits"
-            sub_url = f"http://data.astrometry.net/5200/{sub_name}"
+            sub_url = f"{base_url}/{sub_name}"
             urls_and_filenames.append((sub_url, sub_name))
     else:
         download_filename = url.split('/')[-1]
@@ -1205,7 +1206,8 @@ def download_worker(dir_path, num, url, filename):
             
         import ssl
         context = ssl._create_unverified_context()
-        opener = urllib.request.build_opener()
+        https_handler = urllib.request.HTTPSHandler(context=context)
+        opener = urllib.request.build_opener(https_handler)
         opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
         urllib.request.install_opener(opener)
         
@@ -1220,7 +1222,7 @@ def download_worker(dir_path, num, url, filename):
             downloaded_files.append(target_filepath)
             
             req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            with urllib.request.urlopen(req, context=context) as response:
+            with opener.open(req) as response:
                 total_size = int(response.headers.get('content-length', 0))
                 chunk_size = 1024 * 64
                 downloaded = 0
