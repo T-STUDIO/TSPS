@@ -1205,11 +1205,10 @@ def download_worker(dir_path, num, url, filename):
             os.makedirs(dir_path, exist_ok=True)
             
         import ssl
-        context = ssl._create_unverified_context()
-        https_handler = urllib.request.HTTPSHandler(context=context)
-        opener = urllib.request.build_opener(https_handler)
-        opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
-        urllib.request.install_opener(opener)
+        try:
+            ssl._create_default_https_context = ssl._create_unverified_context
+        except:
+            pass
         
         total_files = len(urls_and_filenames)
         
@@ -1233,9 +1232,15 @@ def download_worker(dir_path, num, url, filename):
                 url_candidates.append(sub_url.replace("/LITE/", "/"))
                 
             for attempt_url in url_candidates:
-                req = urllib.request.Request(attempt_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+                req = urllib.request.Request(
+                    attempt_url, 
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': '*/*'
+                    }
+                )
                 try:
-                    response = opener.open(req)
+                    response = urllib.request.urlopen(req, timeout=30)
                     break
                 except Exception as ex:
                     last_err = ex
