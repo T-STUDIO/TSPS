@@ -730,13 +730,13 @@ INDEX_METADATA = [
     {"num": "4109", "fov": "0.70° - 1.0°", "size_desc": "48 MB", "pattern": "index-4109.fits", "url": "http://data.astrometry.net/4100/index-4109.fits"},
     {"num": "4108", "fov": "0.50° - 0.70°", "size_desc": "91 MB", "pattern": "index-4108.fits", "url": "http://data.astrometry.net/4100/index-4108.fits"},
     {"num": "4107", "fov": "0.37° - 0.50°", "size_desc": "158 MB", "pattern": "index-4107.fits", "url": "http://data.astrometry.net/4100/index-4107.fits"},
-    {"num": "5206", "fov": "0.27° - 0.37°", "size_desc": "294 MB", "pattern": "index-5206-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206.fits"},
-    {"num": "5205", "fov": "0.18° - 0.27°", "size_desc": "587 MB", "pattern": "index-5205-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205.fits"},
-    {"num": "5204", "fov": "0.13° - 0.18°", "size_desc": "1.2 GB", "pattern": "index-5204-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204.fits"},
-    {"num": "5203", "fov": "0.067° - 0.093°", "size_desc": "2.3 GB", "pattern": "index-5203-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203.fits"},
-    {"num": "5202", "fov": "0.093° - 0.13°", "size_desc": "4.6 GB", "pattern": "index-5202-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202.fits"},
-    {"num": "5201", "fov": "0.033° - 0.047°", "size_desc": "8.9 GB", "pattern": "index-5201-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201.fits"},
-    {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GB", "pattern": "index-5200-*.fits", "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200.fits"}
+    {"num": "5206", "fov": "0.27° - 0.37°", "size_desc": "294 MB", "pattern": "index-5206-*.fits", "url": "http://data.astrometry.net/5200/index-5206.fits"},
+    {"num": "5205", "fov": "0.18° - 0.27°", "size_desc": "587 MB", "pattern": "index-5205-*.fits", "url": "http://data.astrometry.net/5200/index-5205.fits"},
+    {"num": "5204", "fov": "0.13° - 0.18°", "size_desc": "1.2 GB", "pattern": "index-5204-*.fits", "url": "http://data.astrometry.net/5200/index-5204.fits"},
+    {"num": "5203", "fov": "0.067° - 0.093°", "size_desc": "2.3 GB", "pattern": "index-5203-*.fits", "url": "http://data.astrometry.net/5200/index-5203.fits"},
+    {"num": "5202", "fov": "0.093° - 0.13°", "size_desc": "4.6 GB", "pattern": "index-5202-*.fits", "url": "http://data.astrometry.net/5200/index-5202.fits"},
+    {"num": "5201", "fov": "0.033° - 0.047°", "size_desc": "8.9 GB", "pattern": "index-5201-*.fits", "url": "http://data.astrometry.net/5200/index-5201.fits"},
+    {"num": "5200", "fov": "0.023° - 0.033°", "size_desc": "18 GB", "pattern": "index-5200-*.fits", "url": "http://data.astrometry.net/5200/index-5200.fits"}
 ]
 
 ASTAP_INDEX_METADATA = [
@@ -1170,346 +1170,126 @@ def astap_download_worker(num, url, pattern, is_zip):
             try: os.remove(target_filepath)
             except: pass
 
-def astap_style_single_download(url, target_filepath, key, idx, total_files):
-    import urllib.request
-    import urllib.error
-    import urllib.parse
-    import http.cookiejar
-    import ssl
-    import os
-    
-    part_filepath = target_filepath + ".part"
-    
-    context = ssl._create_unverified_context()
-    cj = http.cookiejar.CookieJar()
-    
-    class CustomRedirectHandler(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-            new_req = super().redirect_request(req, fp, code, msg, hdrs, newurl)
-            if new_req:
-                for k, v in req.headers.items():
-                    if k.lower() not in ['host', 'content-length', 'content-type']:
-                        new_req.add_header(k, v)
-            return new_req
-            
-    https_handler = urllib.request.HTTPSHandler(context=context)
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(cj),
-        https_handler,
-        CustomRedirectHandler()
-    )
-    
-    parsed = urllib.parse.urlparse(url)
-    referer = f"{parsed.scheme}://{parsed.netloc}/"
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-        'Connection': 'keep-alive',
-        'Referer': referer
-    }
-    
-    is_5200 = "index-5200" in url
-    if is_5200:
-        print(f"\n--- 5200系 接続開始 ({idx + 1}/{total_files}): {url} ---", flush=True)
-        print(f"Request Headers: {headers}", flush=True)
-        
-    req = urllib.request.Request(url, headers=headers)
-    
-    try:
-        response = opener.open(req, timeout=30)
-        if is_5200:
-            print(f"--- 5200系 接続成功 (HTTP Status: {response.status}) ---", flush=True)
-            print(f"Response Headers: {dict(response.headers)}", flush=True)
-    except Exception as e:
-        if is_5200:
-            import traceback
-            print(f"--- 5200系 接続エラー発生 ---", flush=True)
-            print(f"Error Type: {type(e)}", flush=True)
-            print(f"Error Message: {e}", flush=True)
-            traceback.print_exc()
-            print(f"--- 5200系 シンプルな接続 (フォールバック) を試行します ---", flush=True)
-        
-        # ユーザー環境で動作確認されたシンプルなurllib接続へのフォールバック
-        try:
-            fallback_headers = {
-                'User-Agent': 'Mozilla/5.0',
-                'Accept-Encoding': 'identity',
-                'Connection': 'close'
-            }
-            if is_5200:
-                print(f"Fallback Request URL: {url}", flush=True)
-                print(f"Fallback Headers: {fallback_headers}", flush=True)
-            fallback_req = urllib.request.Request(url, headers=fallback_headers)
-            response = urllib.request.urlopen(fallback_req, context=context, timeout=30)
-            if is_5200:
-                print(f"--- 5200系 フォールバック接続成功 (HTTP Status: {response.status}) ---", flush=True)
-                print(f"Fallback Response Headers: {dict(response.headers)}", flush=True)
-        except Exception as fe:
-            if is_5200:
-                import traceback
-                print(f"--- 5200系 フォールバック接続エラー ---", flush=True)
-                print(f"Fallback Error Message: {fe}", flush=True)
-                traceback.print_exc()
-            raise fe
-            
-    with response:
-        total_size = int(response.headers.get('content-length', 0))
-        chunk_size = 1024 * 64
-        downloaded = 0
-        
-        with open(part_filepath, 'wb') as f:
-            while True:
-                if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
-                    DOWNLOAD_TASKS[key]["status"] = "cancelled"
-                    break
-                chunk = response.read(chunk_size)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-                
-                sub_progress = (downloaded / total_size) if total_size > 0 else 0.5
-                overall_progress = int(((idx + sub_progress) / total_files) * 100)
-                DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
-                
-        if DOWNLOAD_TASKS.get(key, {}).get("status") == "cancelled":
-            if os.path.exists(part_filepath):
-                try: os.remove(part_filepath)
-                except: pass
-            return False
-            
-        if os.path.exists(part_filepath):
-            if os.path.exists(target_filepath):
-                try: os.remove(target_filepath)
-                except: pass
-            os.rename(part_filepath, target_filepath)
-            
-        try:
-            os.chmod(target_filepath, 0o777)
-        except:
-            pass
-            
-    return True
-
 DOWNLOAD_TASKS = {}
 
 def download_worker(dir_path, num, url, filename):
     key = (dir_path, num)
-    
-    # 経過ログ保存用の配列を初期化
-    if key not in DOWNLOAD_TASKS:
-        DOWNLOAD_TASKS[key] = {
-            "status": "downloading",
-            "progress": 0,
-            "stop": False,
-            "thread": None
-        }
-    DOWNLOAD_TASKS[key]["logs"] = []
-    
-    def log_msg(msg):
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        full_msg = f"[{timestamp}] {msg}"
-        logger.info(full_msg)
-        if "logs" not in DOWNLOAD_TASKS[key]:
-            DOWNLOAD_TASKS[key]["logs"] = []
-        DOWNLOAD_TASKS[key]["logs"].append(full_msg)
-        if len(DOWNLOAD_TASKS[key]["logs"]) > 100:
-            DOWNLOAD_TASKS[key]["logs"].pop(0)
-
-    # 渡された num をクリーン化（プレフィックス除去、スペース除去）して 5200番台のキー判定の不整合を排除
-    clean_num = str(num).replace("index-", "").strip()
-    log_msg(f"インデックス [index-{clean_num}] のダウンロードタスクを開始します。")
-    
-    # 5200番台の各サブファイルの直接URL定義。自動生成を避け、事前にすべての個別URLを完全に明文化した配列を用意
-    static_urls = {
-        "5206": [
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-00.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-01.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-02.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-03.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-04.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-05.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-06.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-07.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-08.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-09.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-10.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-11.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-12.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-13.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-14.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-15.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-16.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-17.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-18.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-19.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-20.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-21.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-22.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-23.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-24.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-25.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-26.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-27.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-28.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-29.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-30.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-31.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-32.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-33.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-34.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-35.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-36.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-37.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-38.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-39.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-40.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-41.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-42.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-43.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-44.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-45.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-46.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5206-47.fits"
-        ],
-        "5205": [
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-00.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-01.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-02.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-03.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-04.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-05.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-06.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-07.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-08.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-09.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-10.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-11.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-12.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-13.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-14.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-15.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-16.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-17.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-18.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-19.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-20.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-21.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-22.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-23.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-24.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-25.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-26.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-27.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-28.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-29.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-30.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-31.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-32.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-33.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-34.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-35.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-36.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-37.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-38.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-39.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-40.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-41.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-42.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-43.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-44.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-45.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-46.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5205-47.fits"
-        ],
-        "5204": [
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-00.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-01.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-02.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-03.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-04.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-05.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-06.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-07.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-08.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-09.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-10.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-11.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-12.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-13.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-14.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-15.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-16.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-17.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-18.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-19.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-20.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-21.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-22.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-23.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-24.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-25.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-26.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-27.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-28.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-29.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-30.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-31.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-32.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-33.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-34.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-35.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-36.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-37.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-38.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-39.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-40.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-41.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-42.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-43.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-44.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-45.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-46.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5204-47.fits"
-        ],
-        "5203": [
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-00.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-01.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-02.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-03.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-04.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-05.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-06.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-07.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-08.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-09.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-10.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-11.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-12.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-13.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-14.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-15.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-16.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-17.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-18.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-19.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-20.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-21.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-22.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-23.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-24.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-25.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-26.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-27.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-28.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-29.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-30.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-31.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-32.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-33.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-34.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-35.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-36.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-37.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-38.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-39.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-40.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-41.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-42.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-43.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-44.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-45.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-46.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5203-47.fits"
-        ],
-        "5202": [
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-00.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-01.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-02.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-03.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-04.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-05.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-06.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-07.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-08.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-09.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-10.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-11.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-12.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-13.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-14.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-15.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-16.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-17.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-18.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-19.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-20.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-21.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-22.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-23.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-24.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-25.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-26.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-27.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-28.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-29.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-30.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-31.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-32.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-33.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-34.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-35.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-36.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-37.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-38.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-39.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-40.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-41.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-42.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-43.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-44.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-45.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-46.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5202-47.fits"
-        ],
-        "5201": [
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-00.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-01.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-02.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-03.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-04.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-05.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-06.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-07.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-08.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-09.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-10.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-11.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-12.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-13.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-14.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-15.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-16.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-17.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-18.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-19.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-20.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-21.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-22.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-23.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-24.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-25.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-26.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-27.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-28.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-29.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-30.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-31.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-32.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-33.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-34.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-35.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-36.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-37.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-38.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-39.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-40.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-41.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-42.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-43.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-44.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-45.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-46.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5201-47.fits"
-        ],
-        "5200": [
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-00.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-01.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-02.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-03.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-04.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-05.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-06.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-07.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-08.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-09.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-10.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-11.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-12.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-13.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-14.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-15.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-16.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-17.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-18.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-19.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-20.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-21.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-22.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-23.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-24.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-25.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-26.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-27.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-28.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-29.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-30.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-31.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-32.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-33.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-34.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-35.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-36.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-37.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-38.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-39.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-40.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-41.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-42.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-43.fits",
-            "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-44.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-45.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-46.fits", "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/index-5200-47.fits"
-        ]
-    }
-    
-    clean_num = str(num).replace("index-", "").strip()
-    log_msg(f"clean_num を [{clean_num}] と判定しました。")
-    
-    if clean_num in static_urls:
-        urls_and_filenames = []
-        for sub_url in static_urls[clean_num]:
-            sub_name = sub_url.split('/')[-1]
-            urls_and_filenames.append((sub_url, sub_name))
-        log_msg(f"5200番台個別URLにマッチ。合計 {len(urls_and_filenames)} 個のファイルをダウンロードします。")
-    else:
-        download_filename = url.split('/')[-1]
-        urls_and_filenames = [(url, download_filename)]
-        log_msg(f"汎用URLとして登録。ファイル: {download_filename}")
-        
+    download_filename = url.split('/')[-1]
+    target_filepath = os.path.join(dir_path, download_filename)
     try:
         if not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
             
-        total_files = len(urls_and_filenames)
+        import ssl
+        context = ssl._create_unverified_context()
+        # リダイレクト時にUser-Agentヘッダーを失わないよう、グローバルopenerをインストール
+        opener = urllib.request.build_opener()
+        opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')]
+        urllib.request.install_opener(opener)
         
-        for idx, (sub_url, sub_name) in enumerate(urls_and_filenames):
-            if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
-                DOWNLOAD_TASKS[key]["status"] = "cancelled"
-                log_msg("ダウンロードタスクがユーザーによりキャンセルされました。")
-                break
+        if num.startswith("520"):
+            parts = []
+            for i in range(48):
+                part_filename = f"index-{num}-{i:02d}.fits"
+                part_url = f"https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/{part_filename}"
+                parts.append((part_url, part_filename))
                 
-            target_filepath = os.path.join(dir_path, sub_name)
-            
-            # レジューム機能：既に完全なファイルがダウンロード完了している場合はスキップ
-            if os.path.exists(target_filepath) and os.path.getsize(target_filepath) > 1024 * 10:
-                log_msg(f"[{idx+1}/{total_files}] ファイル {sub_name} はダウンロード済みです。スキップ。")
-                overall_progress = int(((idx + 1.0) / total_files) * 100)
-                DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
-                continue
+            for idx, (part_url, part_filename) in enumerate(parts):
+                if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                    DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                    break
+                    
+                part_filepath = os.path.join(dir_path, part_filename)
+                req = urllib.request.Request(part_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+                with urllib.request.urlopen(req, context=context) as response:
+                    part_total_size = int(response.headers.get('content-length', 0))
+                    chunk_size = 1024 * 64
+                    part_downloaded = 0
+                    
+                    with open(part_filepath, 'wb') as f:
+                        while True:
+                            if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                                DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                                break
+                            chunk = response.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            part_downloaded += len(chunk)
+                            if part_total_size > 0:
+                                file_prog = part_downloaded / part_total_size
+                            else:
+                                file_prog = 0.5
+                            overall_progress = int(((idx + file_prog) / 48) * 100)
+                            DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
                 
-            log_msg(f"[{idx+1}/{total_files}] {sub_name} のダウンロードを開始します。")
-            
-            # 通常パスとLITEパスの双方を試行するフォールバック処理
-            last_err = None
-            url_candidates = [sub_url]
-            if "/LITE/" not in sub_url:
-                parts = sub_url.rsplit('/', 1)
-                if len(parts) == 2:
-                    url_candidates.append(f"{parts[0]}/LITE/{parts[1]}")
-            else:
-                url_candidates.append(sub_url.replace("/LITE/", "/"))
-                
-            success = False
-            for attempt_url in url_candidates:
+                if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                    break
+                    
                 try:
-                    log_msg(f"ダウンロード接続試行 URL: {attempt_url}")
-                    success = astap_style_single_download(attempt_url, target_filepath, key, idx, total_files)
-                    if success:
-                        log_msg(f"[{idx+1}/{total_files}] {sub_name} ダウンロード成功。")
-                        break
-                except Exception as ex:
-                    last_err = ex
-                    log_msg(f"[{idx+1}/{total_files}] ダウンロード接続エラー (URL: {attempt_url}): {ex}")
-                    part_filepath = target_filepath + ".part"
+                    os.chmod(part_filepath, 0o777)
+                except Exception as pe:
+                    logger.warning(f"Failed to chmod file {part_filepath}: {pe}")
+            
+            if DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+                DOWNLOAD_TASKS[key]["status"] = "completed"
+                DOWNLOAD_TASKS[key]["progress"] = 100
+                dir_list_cache.invalidate(dir_path)
+            else:
+                for _, part_filename in parts:
+                    part_filepath = os.path.join(dir_path, part_filename)
                     if os.path.exists(part_filepath):
                         try: os.remove(part_filepath)
                         except: pass
-                    continue
-                    
-            if not success:
-                raise Exception(f"All download attempts failed for {sub_name}. Last error: {last_err}")
-                
-        if DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
-            DOWNLOAD_TASKS[key]["status"] = "completed"
-            DOWNLOAD_TASKS[key]["progress"] = 100
-            log_msg("すべてのダウンロードが完了しました。")
-            dir_list_cache.invalidate(dir_path)
-            
-    except Exception as e:
-        import traceback
-        err_tb = traceback.format_exc()
-        log_msg(f"ダウンロード失敗: {e}")
-        logger.error(f"Download Error for {filename}: {e}\n{err_tb}")
-        DOWNLOAD_TASKS[key]["status"] = "failed"
-        if clean_num in ["5200", "5201", "5202", "5203", "5204", "5205", "5206"]:
-            clean_tb = err_tb.replace('\n', ' | ')
-            DOWNLOAD_TASKS[key]["err_msg"] = f"{str(e)} | Details: {clean_tb[:350]}..."
         else:
-            DOWNLOAD_TASKS[key]["err_msg"] = str(e)
-
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+            with urllib.request.urlopen(req, context=context) as response:
+                total_size = int(response.headers.get('content-length', 0))
+                chunk_size = 1024 * 64
+                downloaded = 0
+                
+                with open(target_filepath, 'wb') as f:
+                    while True:
+                        if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                            DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                            break
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress = int((downloaded / total_size) * 100)
+                            DOWNLOAD_TASKS[key]["progress"] = progress
+                        else:
+                            DOWNLOAD_TASKS[key]["progress"] = 50
+                            
+                if DOWNLOAD_TASKS.get(key, {}).get("status") != "cancelled":
+                    try:
+                        os.chmod(target_filepath, 0o777)
+                    except Exception as pe:
+                        logger.warning(f"Failed to chmod file {target_filepath}: {pe}")
+                    DOWNLOAD_TASKS[key]["status"] = "completed"
+                    DOWNLOAD_TASKS[key]["progress"] = 100
+                    dir_list_cache.invalidate(dir_path)
+                else:
+                    if os.path.exists(target_filepath):
+                        os.remove(target_filepath)
+    except Exception as e:
+        logger.error(f"Download Error for {filename}: {e}")
+        DOWNLOAD_TASKS[key]["status"] = "failed"
+        DOWNLOAD_TASKS[key]["err_msg"] = str(e)
+        if num.startswith("520"):
+            for i in range(48):
+                part_filename = f"index-{num}-{i:02d}.fits"
+                part_filepath = os.path.join(dir_path, part_filename)
+                if os.path.exists(part_filepath):
+                    try: os.remove(part_filepath)
+                    except: pass
+        else:
+            if os.path.exists(target_filepath):
+                try: os.remove(target_filepath)
+                except: pass
 
 @app.get("/api/scanned_indices")
 async def api_scanned_indices(path: str):
@@ -1562,8 +1342,7 @@ async def api_scanned_indices(path: str):
             "actual_size_desc": actual_size_desc,
             "status": status,
             "progress": progress,
-            "err_msg": task_err,
-            "logs": task.get("logs", [])
+            "err_msg": task_err
         })
 
     return {
@@ -1574,16 +1353,180 @@ async def api_scanned_indices(path: str):
         "indices": scanned
     }
 
+@app.get("/api/planetarium/stars")
+async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str, max_stars: Optional[int] = 1000):
+    """
+    Queries real stars up to magnitude 12 from 5200-series astrometry index files using `query-starkd` and `tablist`.
+    This enables real, high-precision star data for the planetarium display when zoomed in.
+    """
+    if not os.path.exists(path):
+        return {"stars": [], "error": f"Index path does not exist: {path}"}
+        
+    # Standardise RA to 0-360 range
+    ra = ra % 360.0
+    
+    # 1. Sample 5 points to cover search radius and handle HEALPix boundary overlaps
+    points = [
+        (ra, dec),
+        ((ra + radius) % 360, dec),
+        ((ra - radius) % 360, dec),
+        (ra, min(89.9, max(-89.9, dec + radius))),
+        (ra, min(89.9, max(-89.9, dec - radius)))
+    ]
+    
+    unique_pixels = set()
+    healpix_cmd_available = True
+    
+    for p_ra, p_dec in points:
+        try:
+            cmd = ["healpix", "-r", str(p_ra), "-d", str(p_dec), "-n", "2"]
+            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            output = res.stdout.strip()
+            match = re.search(r'\b(\d+)\b', output)
+            if match:
+                unique_pixels.add(int(match.group(1)))
+        except FileNotFoundError:
+            healpix_cmd_available = False
+            break
+        except Exception as e:
+            logger.warning(f"Error executing healpix command: {e}")
+            
+    # Fallback if healpix command is not available: query all existing index parts in the path
+    if not healpix_cmd_available or not unique_pixels:
+        try:
+            for filename in os.listdir(path):
+                if filename.startswith("index-5206-") and filename.endswith(".fits"):
+                    try:
+                        pix = int(filename.split("-")[2].split(".")[0])
+                        unique_pixels.add(pix)
+                    except:
+                        pass
+        except Exception as e:
+            logger.warning(f"Failed to scan index directory: {e}")
+                    
+    # If we still have no pixels, search 0-47 as a last resort
+    if not unique_pixels:
+        unique_pixels = set(range(48))
+        
+    stars = []
+    temp_dir = "/tmp"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # 2. Query each identified HEALPix tile
+    for pix in sorted(unique_pixels):
+        # Prefer the most detailed 5206 series first, fallback to 5205, 5204 etc.
+        fits_filepath = None
+        for series in ["5206", "5205", "5204", "5203", "5202", "5201", "5200"]:
+            test_filename = f"index-{series}-{pix:02d}.fits"
+            test_path = os.path.join(path, test_filename)
+            if os.path.exists(test_path):
+                fits_filepath = test_path
+                break
+                
+        if not fits_filepath:
+            continue
+            
+        temp_out = os.path.join(temp_dir, f"star_query_{uuid.uuid4().hex}.fits")
+        try:
+            # Execute query-starkd
+            cmd_starkd = [
+                "query-starkd",
+                "-i", fits_filepath,
+                "-o", temp_out,
+                "-r", str(ra),
+                "-d", str(dec),
+                "-R", str(radius)
+            ]
+            subprocess.run(cmd_starkd, capture_output=True, text=True, check=True)
+            
+            if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
+                # Execute tablist to parse the results
+                cmd_tablist = ["tablist", temp_out]
+                res_tab = subprocess.run(cmd_tablist, capture_output=True, text=True, check=True)
+                
+                lines = res_tab.stdout.splitlines()
+                col_indices = {}
+                data_rows = []
+                
+                for line in lines:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    if stripped.startswith("#"):
+                        match = re.match(r"^#\s*(\d+)\s*:\s*([a-zA-Z0-9_]+)", stripped)
+                        if match:
+                            col_num = int(match.group(1)) - 1
+                            col_name = match.group(2).lower()
+                            col_indices[col_num] = col_name
+                    else:
+                        parts = stripped.split()
+                        data_rows.append(parts)
+                        
+                ra_idx = -1
+                dec_idx = -1
+                mag_idx = -1
+                
+                for idx, name in col_indices.items():
+                    if name.startswith("ra"):
+                        ra_idx = idx
+                    elif name.startswith("dec"):
+                        dec_idx = idx
+                    elif "mag" in name or name in ["g", "vt", "hp", "phot_g_mean_mag"]:
+                        mag_idx = idx
+                        
+                # Fallback column guessing if headers aren't parsed
+                if data_rows and (ra_idx == -1 or dec_idx == -1):
+                    num_cols = len(data_rows[0])
+                    if num_cols >= 2:
+                        ra_idx = 0
+                        dec_idx = 1
+                    if num_cols >= 3:
+                        mag_idx = 2
+                        
+                for row in data_rows:
+                    if len(row) <= max(ra_idx, dec_idx):
+                        continue
+                    try:
+                        s_ra = float(row[ra_idx])
+                        s_dec = float(row[dec_idx])
+                        s_mag = 10.0
+                        if mag_idx != -1 and mag_idx < len(row):
+                            s_mag = float(row[mag_idx])
+                            
+                        stars.append({
+                            "ra": s_ra,
+                            "dec": s_dec,
+                            "mag": s_mag
+                        })
+                    except:
+                        continue
+        except FileNotFoundError:
+            return {
+                "stars": [],
+                "error": "query-starkd or tablist utilities not found. Please ensure astrometry.net is fully installed on this server."
+            }
+        except Exception as e:
+            logger.error(f"Error querying pixel {pix}: {e}")
+        finally:
+            if os.path.exists(temp_out):
+                try: os.remove(temp_out)
+                except: pass
+                
+    # Limit maximum returned stars to prevent over-loading the frontend
+    if max_stars and len(stars) > max_stars:
+        stars.sort(key=lambda s: s["mag"])
+        stars = stars[:max_stars]
+        
+    return {"stars": stars, "count": len(stars)}
+
 @app.post("/api/download_index")
 async def api_download_index(request: Request):
     data = await request.json()
     path = data.get("path")
     num = data.get("num")
     
-    if not path or num is None:
+    if not path or not num:
         raise HTTPException(status_code=400, detail="Missing path or num")
-        
-    num = str(num)
         
     meta = next((x for x in INDEX_METADATA if x["num"] == num), None)
     if not meta:
@@ -1614,8 +1557,6 @@ async def api_cancel_download(request: Request):
     data = await request.json()
     path = data.get("path")
     num = data.get("num")
-    if num is not None:
-        num = str(num)
     key = (path, num)
     if key in DOWNLOAD_TASKS:
         DOWNLOAD_TASKS[key]["stop"] = True
@@ -2140,16 +2081,6 @@ async def index_manager():
                 <button id="global-stop-btn" class="btn btn-stop">一時停止</button>
             </div>
 
-            <!-- 詳細経過ログ表示領域 -->
-            <div id="detailed-log-panel" style="margin-top: 20px; background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; display: none;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <div style="font-weight: bold; font-size: 0.9rem; color: #60a5fa; display: flex; align-items: center; gap: 6px;">
-                        <span>📝 ダウンロード経過ログ</span>
-                    </div>
-                </div>
-                <div id="detailed-log-content" style="font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.8rem; line-height: 1.4; max-height: 200px; overflow-y: auto; color: #34d399; white-space: pre-wrap; background: #020617; padding: 10px; border-radius: 6px; border: 1px solid #1e293b;">待機中...</div>
-            </div>
-
             <div class="back-btn-container">
                 <button class="btn btn-blue" style="margin: 0 auto; display: inline-block;" onclick="location.href='/'">コンソールへ戻る</button>
             </div>
@@ -2483,8 +2414,6 @@ async def index_manager():
                 const globalProgress = document.getElementById("global-progress");
                 const stopBtn = document.getElementById("global-stop-btn");
                 const progressTitle = document.getElementById("global-progress-title");
-                const detailedLogPanel = document.getElementById("detailed-log-panel");
-                const detailedLogContent = document.getElementById("detailed-log-content");
                 
                 if (active) {
                     downloadingNum = active.num;
@@ -2498,11 +2427,6 @@ async def index_manager():
                         document.getElementById("global-progress-fill").style.width = active.progress + "%";
                         stopBtn.style.display = "block";
                         stopBtn.onclick = () => stopDownload(active.num);
-                    }
-                    if (active.logs && active.logs.length > 0) {
-                        detailedLogPanel.style.display = "block";
-                        detailedLogContent.textContent = active.logs.join("\n");
-                        detailedLogContent.scrollTop = detailedLogContent.scrollHeight;
                     }
                     startPolling();
                 } else {
@@ -2548,9 +2472,6 @@ async def index_manager():
                         const stopBtn = document.getElementById("global-stop-btn");
                         const progressTitle = document.getElementById("global-progress-title");
 
-                        const detailedLogPanel = document.getElementById("detailed-log-panel");
-                        const detailedLogContent = document.getElementById("detailed-log-content");
-
                         if (active) {
                             globalProgress.style.display = "flex";
                             if (active.status === "extracting") {
@@ -2562,19 +2483,10 @@ async def index_manager():
                                 document.getElementById("global-progress-fill").style.width = active.progress + "%";
                                 stopBtn.style.display = "block";
                             }
-                            if (active.logs && active.logs.length > 0) {
-                                detailedLogPanel.style.display = "block";
-                                detailedLogContent.textContent = active.logs.join("\n");
-                                detailedLogContent.scrollTop = detailedLogContent.scrollHeight;
-                            }
                         } else {
                             clearInterval(pollTimer);
                             pollTimer = null;
                             globalProgress.style.display = "none";
-                            if (detailedLogContent && detailedLogContent.textContent !== "待機中...") {
-                                detailedLogContent.textContent += "\n[INFO] ダウンロードタスクが完了、または停止しました。";
-                                detailedLogContent.scrollTop = detailedLogContent.scrollHeight;
-                            }
                             scanDirectory();
                         }
                     } catch (e) {
