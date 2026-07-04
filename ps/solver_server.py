@@ -1458,6 +1458,12 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
         if os.path.exists(test_path):
             fits_to_query.append(test_path)
             
+    # 2c. Query catalog files (like hd.fits, hip.fits, tycho2-cut.fits, tycho2.kd) if they exist
+    for catalog_file in ["hd.fits", "hip.fits", "tycho2-cut.fits", "tycho2.kd"]:
+        test_path = os.path.join(path, catalog_file)
+        if os.path.exists(test_path):
+            fits_to_query.append(test_path)
+            
     # De-duplicate the FITS query paths list while preserving order
     fits_to_query = list(dict.fromkeys(fits_to_query))
     
