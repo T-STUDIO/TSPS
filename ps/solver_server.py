@@ -1200,28 +1200,51 @@ def download_worker(dir_path, num, url, filename):
                     break
                     
                 part_filepath = os.path.join(dir_path, part_filename)
-                req = urllib.request.Request(part_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-                with urllib.request.urlopen(req, context=context) as response:
-                    part_total_size = int(response.headers.get('content-length', 0))
-                    chunk_size = 1024 * 64
-                    part_downloaded = 0
+                
+                # Try curl first for maximum robustness against SSL/TLS handshake failures on NERSC
+                download_success = False
+                try:
+                    cmd = [
+                        "curl",
+                        "-L", "-k", "-s",
+                        "--connect-timeout", "15",
+                        "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "-o", part_filepath,
+                        part_url
+                    ]
+                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    if res.returncode == 0 and os.path.exists(part_filepath) and os.path.getsize(part_filepath) > 0:
+                        download_success = True
+                except Exception as ce:
+                    logger.warning(f"curl download failed for {part_filename}: {ce}")
                     
-                    with open(part_filepath, 'wb') as f:
-                        while True:
-                            if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
-                                DOWNLOAD_TASKS[key]["status"] = "cancelled"
-                                break
-                            chunk = response.read(chunk_size)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            part_downloaded += len(chunk)
-                            if part_total_size > 0:
-                                file_prog = part_downloaded / part_total_size
-                            else:
-                                file_prog = 0.5
-                            overall_progress = int(((idx + file_prog) / 48) * 100)
-                            DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
+                if not download_success:
+                    # Fallback to urllib
+                    req = urllib.request.Request(part_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+                    with urllib.request.urlopen(req, context=context) as response:
+                        part_total_size = int(response.headers.get('content-length', 0))
+                        chunk_size = 1024 * 64
+                        part_downloaded = 0
+                        
+                        with open(part_filepath, 'wb') as f:
+                            while True:
+                                if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
+                                    DOWNLOAD_TASKS[key]["status"] = "cancelled"
+                                    break
+                                chunk = response.read(chunk_size)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                part_downloaded += len(chunk)
+                                if part_total_size > 0:
+                                    file_prog = part_downloaded / part_total_size
+                                else:
+                                    file_prog = 0.5
+                                overall_progress = int(((idx + file_prog) / 48) * 100)
+                                DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
+                else:
+                    overall_progress = int(((idx + 1.0) / 48) * 100)
+                    DOWNLOAD_TASKS[key]["progress"] = min(99, overall_progress)
                 
                 if DOWNLOAD_TASKS.get(key, {}).get("stop", False):
                     break
@@ -1412,20 +1435,34 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
     temp_dir = "/tmp"
     os.makedirs(temp_dir, exist_ok=True)
     
-    # 2. Query each identified HEALPix tile
+    fits_to_query = []
+    ALL_SERIES = [
+        "5206", "5205", "5204", "5203", "5202", "5201", "5200",
+        "4119", "4118", "4117", "4116", "4115", "4114", "4113",
+        "4112", "4111", "4110", "4109", "4108", "4107"
+    ]
+    
+    # 2a. Query HEALPix segmented tiles
     for pix in sorted(unique_pixels):
-        # Prefer the most detailed 5206 series first, fallback to 5205, 5204 etc.
-        fits_filepath = None
-        for series in ["5206", "5205", "5204", "5203", "5202", "5201", "5200"]:
+        for series in ALL_SERIES:
             test_filename = f"index-{series}-{pix:02d}.fits"
             test_path = os.path.join(path, test_filename)
             if os.path.exists(test_path):
-                fits_filepath = test_path
+                fits_to_query.append(test_path)
                 break
                 
-        if not fits_filepath:
-            continue
+    # 2b. Query unsegmented files (like index-4119.fits... index-4107.fits)
+    for series in ALL_SERIES:
+        test_filename = f"index-{series}.fits"
+        test_path = os.path.join(path, test_filename)
+        if os.path.exists(test_path):
+            fits_to_query.append(test_path)
             
+    # De-duplicate the FITS query paths list while preserving order
+    fits_to_query = list(dict.fromkeys(fits_to_query))
+    
+    # 2. Query each identified FITS file
+    for fits_filepath in fits_to_query:
         temp_out = os.path.join(temp_dir, f"star_query_{uuid.uuid4().hex}.fits")
         try:
             # Execute query-starkd
@@ -1551,6 +1588,25 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                 try: os.remove(temp_out)
                 except: pass
                 
+    # Coordinate-based de-duplication of star query results (within 3.6 arcseconds)
+    import math
+    unique_stars = []
+    for s in stars:
+        is_dup = False
+        for us in unique_stars:
+            ddec = abs(s["dec"] - us["dec"])
+            if ddec < 0.001:
+                dra = abs(s["ra"] - us["ra"]) * math.cos(math.radians((s["dec"] + us["dec"]) / 2.0))
+                if dra < 0.001 and math.sqrt(dra*dra + ddec*ddec) < 0.001:
+                    is_dup = True
+                    for key in ["hd", "hip", "tyc", "ucac", "gaia"]:
+                        if key in s and key not in us:
+                            us[key] = s[key]
+                    break
+        if not is_dup:
+            unique_stars.append(s)
+    stars = unique_stars
+
     # Limit maximum returned stars to prevent over-loading the frontend
     if max_stars and len(stars) > max_stars:
         stars.sort(key=lambda s: s["mag"])
