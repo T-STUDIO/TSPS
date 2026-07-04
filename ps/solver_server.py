@@ -1436,11 +1436,18 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
     os.makedirs(temp_dir, exist_ok=True)
     
     fits_to_query = []
-    ALL_SERIES = [
-        "5206", "5205", "5204", "5203", "5202", "5201", "5200",
+    series_5200 = ["5206", "5205", "5204", "5203", "5202", "5201", "5200"]
+    series_4100 = [
         "4119", "4118", "4117", "4116", "4115", "4114", "4113",
         "4112", "4111", "4110", "4109", "4108", "4107"
     ]
+    
+    # radius (search radius) in degrees: if search diameter is larger than 2 degrees (radius > 1.0),
+    # prioritize the 4100 series (wider FOV) to avoid heavy 5200-series (dense stars) queries.
+    if radius > 1.0:
+        ALL_SERIES = series_4100 + series_5200
+    else:
+        ALL_SERIES = series_5200 + series_4100
     
     # 2a. Query HEALPix segmented tiles
     for pix in sorted(unique_pixels):
@@ -1496,7 +1503,8 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                     if not stripped:
                         continue
                     if stripped.startswith("#"):
-                        match = re.match(r"^#\s*(\d+)\s*:\s*([a-zA-Z0-9_]+)", stripped)
+                        # Support cases like '# column 1: ra' or '# col 1: ra' or '# 1: ra'
+                        match = re.match(r"^#\s*(?:col(?:umn)?\s+)?(\d+)\s*:\s*([a-zA-Z0-9_]+)", stripped)
                         if match:
                             col_num = int(match.group(1)) - 1
                             col_name = match.group(2).lower()
