@@ -1465,14 +1465,30 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                 ra_idx = -1
                 dec_idx = -1
                 mag_idx = -1
+                hd_idx = -1
+                hip_idx = -1
+                tyc_idx = -1
+                ucac_idx = -1
+                gaia_idx = -1
                 
                 for idx, name in col_indices.items():
-                    if name.startswith("ra"):
+                    name_lower = name.lower()
+                    if name_lower.startswith("ra"):
                         ra_idx = idx
-                    elif name.startswith("dec"):
+                    elif name_lower.startswith("dec"):
                         dec_idx = idx
-                    elif "mag" in name or name in ["g", "vt", "hp", "phot_g_mean_mag"]:
+                    elif "mag" in name_lower or name_lower in ["g", "vt", "hp", "phot_g_mean_mag"]:
                         mag_idx = idx
+                    elif "hd" in name_lower or name_lower == "hd":
+                        hd_idx = idx
+                    elif "hip" in name_lower or name_lower == "hip":
+                        hip_idx = idx
+                    elif "tyc" in name_lower or "tycho" in name_lower:
+                        tyc_idx = idx
+                    elif "ucac" in name_lower:
+                        ucac_idx = idx
+                    elif "gaia" in name_lower:
+                        gaia_idx = idx
                         
                 # Fallback column guessing if headers aren't parsed
                 if data_rows and (ra_idx == -1 or dec_idx == -1):
@@ -1493,11 +1509,34 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                         if mag_idx != -1 and mag_idx < len(row):
                             s_mag = float(row[mag_idx])
                             
-                        stars.append({
+                        star_data = {
                             "ra": s_ra,
                             "dec": s_dec,
                             "mag": s_mag
-                        })
+                        }
+                        
+                        if hd_idx != -1 and hd_idx < len(row):
+                            val = row[hd_idx].strip()
+                            if val and val != "0" and val != "-1":
+                                star_data["hd"] = val
+                        if hip_idx != -1 and hip_idx < len(row):
+                            val = row[hip_idx].strip()
+                            if val and val != "0" and val != "-1":
+                                star_data["hip"] = val
+                        if tyc_idx != -1 and tyc_idx < len(row):
+                            val = row[tyc_idx].strip()
+                            if val and val != "0" and val != "-1":
+                                star_data["tyc"] = val
+                        if ucac_idx != -1 and ucac_idx < len(row):
+                            val = row[ucac_idx].strip()
+                            if val and val != "0" and val != "-1":
+                                star_data["ucac"] = val
+                        if gaia_idx != -1 and gaia_idx < len(row):
+                            val = row[gaia_idx].strip()
+                            if val and val != "0" and val != "-1":
+                                star_data["gaia"] = val
+                                
+                        stars.append(star_data)
                     except:
                         continue
         except FileNotFoundError:
