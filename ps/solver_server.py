@@ -1314,6 +1314,127 @@ def download_worker(dir_path, num, url, filename):
                 try: os.remove(target_filepath)
                 except: pass
 
+_hyperleda_cache = None
+
+def load_hyperleda_cache(path_or_dir):
+    global _hyperleda_cache
+    if _hyperleda_cache is not None:
+        return _hyperleda_cache
+    
+    import struct
+    import glob
+    
+    possible_paths = [
+        os.path.join(path_or_dir, "hyperleda.290"),
+        os.path.join(path_or_dir, "hyperleda.bin"),
+        "/opt/astap/hyperleda.290",
+        "/opt/astap/hyperleda.bin",
+        os.path.expanduser("~/astap_downloads/hyperleda.290"),
+        os.path.expanduser("~/astap_downloads/hyperleda.bin")
+    ]
+    
+    hyperleda_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            hyperleda_path = p
+            break
+            
+    if not hyperleda_path:
+        for d in [path_or_dir, "/opt/astap", os.path.expanduser("~/astap_downloads")]:
+            if os.path.exists(d):
+                matches = glob.glob(os.path.join(d, "*leda*"))
+                for m in matches:
+                    if os.path.isfile(m) and ("290" in m or "bin" in m or "txt" in m or "leda" in m):
+                        hyperleda_path = m
+                        break
+            if hyperleda_path:
+                break
+                
+    if not hyperleda_path:
+        logger.info("Hyperleda database file not found. Skipping Hyperleda name query.")
+        _hyperleda_cache = []
+        return _hyperleda_cache
+
+    logger.info(f"Loading Hyperleda database from {hyperleda_path}...")
+    cache = []
+    try:
+        if hyperleda_path.endswith(".txt"):
+            with open(hyperleda_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        name = parts[0]
+                        try:
+                            l_ra = float(parts[1])
+                            l_dec = float(parts[2])
+                            cache.append((l_ra, l_dec, name))
+                        except ValueError:
+                            pass
+        else:
+            file_size = os.path.getsize(hyperleda_path)
+            record_size = 29
+            if file_size % 29 != 0 and file_size % 50 == 0:
+                record_size = 50
+                
+            with open(hyperleda_path, "rb") as f:
+                while True:
+                    data = f.read(record_size)
+                    if len(data) < record_size:
+                        break
+                    try:
+                        ra_val, dec_val = struct.unpack("<ff", data[:8])
+                        name_bytes = data[10:]
+                        name_str = name_bytes.decode("ascii", errors="ignore").strip("\x00\r\n\t ")
+                        if not name_str:
+                            name_str = data[8:].decode("ascii", errors="ignore").strip("\x00\r\n\t ")
+                        
+                        if name_str:
+                            cache.append((ra_val, dec_val, name_str))
+                    except Exception:
+                        pass
+        
+        cache.sort(key=lambda item: item[0])
+        _hyperleda_cache = cache
+        logger.info(f"Loaded {len(cache)} objects from Hyperleda database into memory cache successfully!")
+    except Exception as e:
+        logger.error(f"Error loading Hyperleda database: {e}")
+        _hyperleda_cache = []
+        
+    return _hyperleda_cache
+
+def query_hyperleda_cache(ra, dec, tolerance=0.01, path_or_dir="/opt/astap"):
+    global _hyperleda_cache
+    import bisect
+    import math
+    
+    if _hyperleda_cache is None:
+        load_hyperleda_cache(path_or_dir)
+        
+    if not _hyperleda_cache:
+        return None
+        
+    keys = [item[0] for item in _hyperleda_cache]
+    idx_start = bisect.bisect_left(keys, ra - tolerance)
+    idx_end = bisect.bisect_right(keys, ra + tolerance)
+    
+    best_name = None
+    min_dist = tolerance
+    
+    for i in range(idx_start, idx_end):
+        item_ra, item_dec, item_name = _hyperleda_cache[i]
+        ddec = abs(dec - item_dec)
+        if ddec < min_dist:
+            dra = abs(ra - item_ra) * math.cos(math.radians((dec + item_dec) / 2.0))
+            dist = math.sqrt(dra*dra + ddec*ddec)
+            if dist < min_dist:
+                min_dist = dist
+                best_name = item_name
+                
+    return best_name
+
 @app.get("/api/scanned_indices")
 async def api_scanned_indices(path: str):
     exists = os.path.exists(path)
@@ -1746,6 +1867,18 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                     if tyc_val: star_data["tyc"] = tyc_val
                     if ucac_val: star_data["ucac"] = ucac_val
                     if gaia_val: star_data["gaia"] = gaia_val
+                    
+                    # ASTAPのHyperledaを優先して天体名を取得
+                    leda_name = query_hyperleda_cache(s_ra, s_dec, tolerance=0.01, path_or_dir=path)
+                    if leda_name:
+                        star_data["name"] = leda_name
+                    else:
+                        if hd_val:
+                            star_data["name"] = f"HD {hd_val}"
+                        elif hip_val:
+                            star_data["name"] = f"HIP {hip_val}"
+                        elif tyc_val:
+                            star_data["name"] = f"TYC {tyc_val}"
                                     
                     stars.append(star_data)
         except FileNotFoundError:
