@@ -1671,15 +1671,69 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                         "mag": s_mag
                     }
                     
-                    for key in ["hd", "hip", "tyc", "ucac", "gaia"]:
-                        for rk, rv in row_lower.items():
-                            if key in rk:
-                                val = str(rv).strip()
-                                if val.endswith(".0"):
-                                    val = val[:-2]
-                                if val and val != "0" and val != "-1":
-                                    star_data[key] = val
-                                    break
+                    # Extract catalog identifiers with fallback patterns for naming variations and file name clues
+                    fn_lower = os.path.basename(fits_filepath).lower()
+                    hd_val = None
+                    hip_val = None
+                    tyc_val = None
+                    ucac_val = None
+                    gaia_val = None
+
+                    # Check for Tycho-2 individual parts first (tyc1, tyc2, tyc3)
+                    tyc1 = row_lower.get("tyc1")
+                    tyc2 = row_lower.get("tyc2")
+                    tyc3 = row_lower.get("tyc3")
+                    if tyc1 is not None and tyc2 is not None and tyc3 is not None:
+                        try:
+                            t1 = str(int(float(tyc1)))
+                            t2 = str(int(float(tyc2)))
+                            t3 = str(int(float(tyc3)))
+                            tyc_val = f"{t1}-{t2}-{t3}"
+                        except Exception:
+                            pass
+
+                    for rk, rv in row_lower.items():
+                        rv_str = str(rv).strip()
+                        if rv_str.endswith(".0"):
+                            rv_str = rv_str[:-2]
+                        if not rv_str or rv_str in ["0", "-1", "none", "null"]:
+                            continue
+
+                        # Henry Draper
+                        if "hd" in rk:
+                            hd_val = rv_str
+                        elif rk == "id" and "hd" in fn_lower:
+                            hd_val = rv_str
+
+                        # Hipparcos
+                        elif "hip" in rk:
+                            hip_val = rv_str
+                        elif rk == "id" and "hip" in fn_lower:
+                            hip_val = rv_str
+
+                        # Tycho
+                        elif "tyc" in rk and not tyc_val:
+                            tyc_val = rv_str
+                        elif rk == "id" and ("tycho" in fn_lower or "tyc" in fn_lower):
+                            tyc_val = rv_str
+
+                        # UCAC
+                        elif "ucac" in rk:
+                            ucac_val = rv_str
+                        elif rk == "id" and "ucac" in fn_lower:
+                            ucac_val = rv_str
+
+                        # Gaia
+                        elif "gaia" in rk or rk == "source_id":
+                            gaia_val = rv_str
+                        elif rk == "id" and "gaia" in fn_lower:
+                            gaia_val = rv_str
+
+                    if hd_val: star_data["hd"] = hd_val
+                    if hip_val: star_data["hip"] = hip_val
+                    if tyc_val: star_data["tyc"] = tyc_val
+                    if ucac_val: star_data["ucac"] = ucac_val
+                    if gaia_val: star_data["gaia"] = gaia_val
                                     
                     stars.append(star_data)
         except FileNotFoundError:
@@ -1692,55 +1746,7 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
         finally:
             if os.path.exists(temp_out):
                 try: os.remove(temp_out)
-                except Exception: passe
-                    try:
-                        s_ra = float(row[ra_idx])
-                        s_dec = float(row[dec_idx])
-                        s_mag = 10.0
-                        if mag_idx != -1 and mag_idx < len(row):
-                            s_mag = float(row[mag_idx])
-                            
-                        star_data = {
-                            "ra": s_ra,
-                            "dec": s_dec,
-                            "mag": s_mag
-                        }
-                        
-                        if hd_idx != -1 and hd_idx < len(row):
-                            val = row[hd_idx].strip()
-                            if val and val != "0" and val != "-1":
-                                star_data["hd"] = val
-                        if hip_idx != -1 and hip_idx < len(row):
-                            val = row[hip_idx].strip()
-                            if val and val != "0" and val != "-1":
-                                star_data["hip"] = val
-                        if tyc_idx != -1 and tyc_idx < len(row):
-                            val = row[tyc_idx].strip()
-                            if val and val != "0" and val != "-1":
-                                star_data["tyc"] = val
-                        if ucac_idx != -1 and ucac_idx < len(row):
-                            val = row[ucac_idx].strip()
-                            if val and val != "0" and val != "-1":
-                                star_data["ucac"] = val
-                        if gaia_idx != -1 and gaia_idx < len(row):
-                            val = row[gaia_idx].strip()
-                            if val and val != "0" and val != "-1":
-                                star_data["gaia"] = val
-                                
-                        stars.append(star_data)
-                    except:
-                        continue
-        except FileNotFoundError:
-            return {
-                "stars": [],
-                "error": "query-starkd or tablist utilities not found. Please ensure astrometry.net is fully installed on this server."
-            }
-        except Exception as e:
-            logger.error(f"Error querying pixel {pix}: {e}")
-        finally:
-            if os.path.exists(temp_out):
-                try: os.remove(temp_out)
-                except: pass
+                except Exception: pass
                 
     # Coordinate-based de-duplication of star query results (within 3.6 arcseconds)
     import math
