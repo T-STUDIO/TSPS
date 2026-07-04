@@ -1679,24 +1679,36 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                     ucac_val = None
                     gaia_val = None
 
+                    def clean_catalog_val(val):
+                        if val is None:
+                            return None
+                        if isinstance(val, (list, tuple)):
+                            if len(val) > 0:
+                                val = val[0]
+                            else:
+                                return None
+                        if isinstance(val, bytes):
+                            try:
+                                val = val.decode("utf-8", errors="ignore").strip()
+                            except Exception:
+                                pass
+                        s_val = str(val).strip()
+                        if s_val.endswith(".0"):
+                            s_val = s_val[:-2]
+                        if not s_val or s_val in ["0", "-1", "none", "null"]:
+                            return None
+                        return s_val
+
                     # Check for Tycho-2 individual parts first (tyc1, tyc2, tyc3)
-                    tyc1 = row_lower.get("tyc1")
-                    tyc2 = row_lower.get("tyc2")
-                    tyc3 = row_lower.get("tyc3")
-                    if tyc1 is not None and tyc2 is not None and tyc3 is not None:
-                        try:
-                            t1 = str(int(float(tyc1)))
-                            t2 = str(int(float(tyc2)))
-                            t3 = str(int(float(tyc3)))
-                            tyc_val = f"{t1}-{t2}-{t3}"
-                        except Exception:
-                            pass
+                    tyc1 = clean_catalog_val(row_lower.get("tyc1"))
+                    tyc2 = clean_catalog_val(row_lower.get("tyc2"))
+                    tyc3 = clean_catalog_val(row_lower.get("tyc3"))
+                    if tyc1 and tyc2 and tyc3:
+                        tyc_val = f"{tyc1}-{tyc2}-{tyc3}"
 
                     for rk, rv in row_lower.items():
-                        rv_str = str(rv).strip()
-                        if rv_str.endswith(".0"):
-                            rv_str = rv_str[:-2]
-                        if not rv_str or rv_str in ["0", "-1", "none", "null"]:
+                        rv_str = clean_catalog_val(rv)
+                        if not rv_str:
                             continue
 
                         # Henry Draper
