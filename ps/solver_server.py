@@ -1422,7 +1422,7 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                     try:
                         pix = int(filename.split("-")[2].split(".")[0])
                         unique_pixels.add(pix)
-                    except:
+                    except Exception:
                         pass
         except Exception as e:
             logger.warning(f"Failed to scan index directory: {e}")
@@ -1473,7 +1473,158 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
             
     # De-duplicate the FITS query paths list while preserving order
     fits_to_query = list(dict.fromkeys(fits_to_query))
-    
+
+    # Helper to parse FITS BINTABLE files without relying on external tablist utility.
+    def read_fits_bintable(filepath):
+        import struct
+        import re
+        
+        def read_header(f):
+            header = {}
+            while True:
+                block = f.read(2880)
+                if len(block) < 2880:
+                    break
+                end_found = False
+                for i in range(0, 2880, 80):
+                    card = block[i:i+80].decode("latin1")
+                    keyword = card[:8].strip()
+                    if keyword == "END":
+                        end_found = True
+                        break
+                    if "=" in card[8:10]:
+                        val_comment = card[10:].split("/", 1)
+                        val = val_comment[0].strip()
+                        if val.startswith("'") and val.endswith("'"):
+                            val = val[1:-1].strip()
+                        header[keyword] = val
+                if end_found:
+                    break
+            return header
+
+        try:
+            with open(filepath, "rb") as f:
+                prim_hdr = read_header(f)
+                if not prim_hdr:
+                    return []
+                
+                naxis = int(prim_hdr.get("NAXIS", 0))
+                if naxis > 0:
+                    bitpix = int(prim_hdr.get("BITPIX", 8))
+                    gcount = int(prim_hdr.get("GCOUNT", 1))
+                    pcount = int(prim_hdr.get("PCOUNT", 0))
+                    num_elements = 1
+                    for k in range(1, naxis + 1):
+                        num_elements *= int(prim_hdr.get(f"NAXIS{k}", 0))
+                    data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
+                    pad_bytes = (2880 - (data_bytes % 2880)) % 2880
+                    f.seek(data_bytes + pad_bytes, 1)
+                    
+                while True:
+                    ext_hdr = read_header(f)
+                    if not ext_hdr:
+                        break
+                    xtension = ext_hdr.get("XTENSION", "").strip()
+                    if xtension in ["BINTABLE", "TABLE"]:
+                        naxis1 = int(ext_hdr.get("NAXIS1", 0))
+                        naxis2 = int(ext_hdr.get("NAXIS2", 0))
+                        tfields = int(ext_hdr.get("TFIELDS", 0))
+                        
+                        columns = []
+                        for i in range(1, tfields + 1):
+                            ttype = ext_hdr.get(f"TTYPE{i}", f"col{i}").strip().lower()
+                            tform = ext_hdr.get(f"TFORM{i}", "").strip()
+                            columns.append((ttype, tform))
+                        
+                        data_size = naxis1 * naxis2
+                        data_block = f.read(data_size)
+                        
+                        pad_bytes = (2880 - (data_size % 2880)) % 2880
+                        f.read(pad_bytes)
+                        
+                        col_structs = []
+                        for ctype, tform in columns:
+                            m = re.match(r'^(\d*)([A-Z])', tform)
+                            if not m:
+                                continue
+                            repeat = int(m.group(1)) if m.group(1) else 1
+                            type_char = m.group(2)
+                            
+                            if type_char == 'D':
+                                fmt = f'{repeat}d'
+                                sz = repeat * 8
+                            elif type_char == 'E':
+                                fmt = f'{repeat}f'
+                                sz = repeat * 4
+                            elif type_char == 'J':
+                                fmt = f'{repeat}i'
+                                sz = repeat * 4
+                            elif type_char == 'I':
+                                fmt = f'{repeat}h'
+                                sz = repeat * 2
+                            elif type_char == 'B':
+                                fmt = f'{repeat}B'
+                                sz = repeat * 1
+                            elif type_char == 'A':
+                                fmt = f'{repeat}s'
+                                sz = repeat * 1
+                            elif type_char == 'K':
+                                fmt = f'{repeat}q'
+                                sz = repeat * 8
+                            elif type_char == 'L':
+                                fmt = f'{repeat}?'
+                                sz = repeat * 1
+                            else:
+                                fmt = f'{repeat}s'
+                                sz = repeat * 1
+                            col_structs.append((ctype, fmt, sz, repeat, type_char))
+                        
+                        rows = []
+                        for row_idx in range(naxis2):
+                            row_data = {}
+                            row_bytes = data_block[row_idx * naxis1 : (row_idx + 1) * naxis1]
+                            if len(row_bytes) < naxis1:
+                                break
+                            
+                            col_offset = 0
+                            for cname, fmt, sz, repeat, type_char in col_structs:
+                                val_bytes = row_bytes[col_offset : col_offset + sz]
+                                col_offset += sz
+                                if len(val_bytes) < sz:
+                                    continue
+                                
+                                try:
+                                    unpacked = struct.unpack(f'>{fmt}', val_bytes)
+                                    if type_char == 'A':
+                                        val = b"".join(unpacked).decode("utf-8", errors="ignore").strip()
+                                    else:
+                                        if repeat == 1:
+                                            val = unpacked[0]
+                                        else:
+                                            val = list(unpacked)
+                                    row_data[cname] = val
+                                except Exception:
+                                    row_data[cname] = None
+                            rows.append(row_data)
+                        return rows
+                    else:
+                        naxis1 = int(ext_hdr.get("NAXIS1", 0))
+                        naxis2 = int(ext_hdr.get("NAXIS2", 1))
+                        naxis = int(ext_hdr.get("NAXIS", 0))
+                        bitpix = int(ext_hdr.get("BITPIX", 8))
+                        gcount = int(ext_hdr.get("GCOUNT", 1))
+                        pcount = int(ext_hdr.get("PCOUNT", 0))
+                        num_elements = 1
+                        for k in range(1, naxis + 1):
+                            num_elements *= int(ext_hdr.get(f"NAXIS{k}", 0))
+                        if naxis > 0:
+                            data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
+                            pad_bytes = (2880 - (data_bytes % 2880)) % 2880
+                            f.seek(data_bytes + pad_bytes, 1)
+        except Exception as e:
+            logger.error(f"Error parsing FITS file {filepath}: {e}")
+        return []
+
     # 2. Query each identified FITS file
     for fits_filepath in fits_to_query:
         temp_out = os.path.join(temp_dir, f"star_query_{uuid.uuid4().hex}.fits")
@@ -1490,69 +1641,58 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
             subprocess.run(cmd_starkd, capture_output=True, text=True, check=True)
             
             if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
-                # Execute tablist to parse the results
-                cmd_tablist = ["tablist", temp_out]
-                res_tab = subprocess.run(cmd_tablist, capture_output=True, text=True, check=True)
-                
-                lines = res_tab.stdout.splitlines()
-                col_indices = {}
-                data_rows = []
-                
-                for line in lines:
-                    stripped = line.strip()
-                    if not stripped:
+                rows = read_fits_bintable(temp_out)
+                for row in rows:
+                    row_lower = {k.lower(): v for k, v in row.items() if v is not None}
+                    
+                    s_ra = None
+                    s_dec = None
+                    for k, v in row_lower.items():
+                        if k.startswith("ra"):
+                            s_ra = float(v)
+                        elif k.startswith("dec"):
+                            s_dec = float(v)
+                            
+                    if s_ra is None or s_dec is None:
                         continue
-                    if stripped.startswith("#"):
-                        # Support cases like '# column 1: ra' or '# col 1: ra' or '# 1: ra'
-                        match = re.match(r"^#\s*(?:col(?:umn)?\s+)?(\d+)\s*:\s*([a-zA-Z0-9_]+)", stripped)
-                        if match:
-                            col_num = int(match.group(1)) - 1
-                            col_name = match.group(2).lower()
-                            col_indices[col_num] = col_name
-                    else:
-                        parts = stripped.split()
-                        data_rows.append(parts)
                         
-                ra_idx = -1
-                dec_idx = -1
-                mag_idx = -1
-                hd_idx = -1
-                hip_idx = -1
-                tyc_idx = -1
-                ucac_idx = -1
-                gaia_idx = -1
-                
-                for idx, name in col_indices.items():
-                    name_lower = name.lower()
-                    if name_lower.startswith("ra"):
-                        ra_idx = idx
-                    elif name_lower.startswith("dec"):
-                        dec_idx = idx
-                    elif "mag" in name_lower or name_lower in ["g", "vt", "hp", "phot_g_mean_mag"]:
-                        mag_idx = idx
-                    elif "hd" in name_lower or name_lower == "hd":
-                        hd_idx = idx
-                    elif "hip" in name_lower or name_lower == "hip":
-                        hip_idx = idx
-                    elif "tyc" in name_lower or "tycho" in name_lower:
-                        tyc_idx = idx
-                    elif "ucac" in name_lower:
-                        ucac_idx = idx
-                    elif "gaia" in name_lower:
-                        gaia_idx = idx
-                        
-                # Fallback column guessing if headers aren't parsed
-                if data_rows and (ra_idx == -1 or dec_idx == -1):
-                    num_cols = len(data_rows[0])
-                    if num_cols >= 2:
-                        ra_idx = 0
-                        dec_idx = 1
-                    if num_cols >= 3:
-                        mag_idx = 2
-                        
-                for row in data_rows:
-                    if len(row) <= max(ra_idx, dec_idx):
-                        continue
+                    s_mag = 10.0
+                    for k, v in row_lower.items():
+                        if "mag" in k or k in ["g", "vt", "hp", "phot_g_mean_mag"]:
+                            try:
+                                s_mag = float(v)
+                                break
+                            except Exception:
+                                pass
+                                
+                    star_data = {
+                        "ra": s_ra,
+                        "dec": s_dec,
+                        "mag": s_mag
+                    }
+                    
+                    for key in ["hd", "hip", "tyc", "ucac", "gaia"]:
+                        for rk, rv in row_lower.items():
+                            if key in rk:
+                                val = str(rv).strip()
+                                if val.endswith(".0"):
+                                    val = val[:-2]
+                                if val and val != "0" and val != "-1":
+                                    star_data[key] = val
+                                    break
+                                    
+                    stars.append(star_data)
+        except FileNotFoundError:
+            return {
+                "stars": [],
+                "error": "query-starkd utility not found. Please ensure astrometry.net is fully installed on this server."
+            }
+        except Exception as e:
+            logger.error(f"Error querying pixel {pix}: {e}")
+        finally:
+            if os.path.exists(temp_out):
+                try: os.remove(temp_out)
+                except Exception: passe
                     try:
                         s_ra = float(row[ra_idx])
                         s_dec = float(row[dec_idx])
