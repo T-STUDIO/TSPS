@@ -1374,6 +1374,7 @@ def load_hyperleda_cache(path_or_dir):
                         except ValueError:
                             pass
         else:
+            import math
             file_size = os.path.getsize(hyperleda_path)
             record_size = 29
             if file_size % 29 != 0 and file_size % 50 == 0:
@@ -1386,13 +1387,22 @@ def load_hyperleda_cache(path_or_dir):
                         break
                     try:
                         ra_val, dec_val = struct.unpack("<ff", data[:8])
+                        # ASTAP binary catalog files (including .290 and .bin) store RA/DEC in radians.
+                        # Convert radians to degrees for querying.
+                        ra_deg = math.degrees(ra_val)
+                        dec_deg = math.degrees(dec_val)
+                        
+                        # Normalize RA to [0, 360] and DEC to [-90, 90]
+                        ra_deg = ra_deg % 360.0
+                        dec_deg = max(-90.0, min(90.0, dec_deg))
+                        
                         name_bytes = data[10:]
                         name_str = name_bytes.decode("ascii", errors="ignore").strip("\x00\r\n\t ")
                         if not name_str:
                             name_str = data[8:].decode("ascii", errors="ignore").strip("\x00\r\n\t ")
                         
                         if name_str:
-                            cache.append((ra_val, dec_val, name_str))
+                            cache.append((ra_deg, dec_deg, name_str))
                     except Exception:
                         pass
         
@@ -1405,7 +1415,7 @@ def load_hyperleda_cache(path_or_dir):
         
     return _hyperleda_cache
 
-def query_hyperleda_cache(ra, dec, tolerance=0.01, path_or_dir="/opt/astap"):
+def query_hyperleda_cache(ra, dec, tolerance=0.1, path_or_dir="/opt/astap"):
     global _hyperleda_cache
     import bisect
     import math
@@ -1496,6 +1506,173 @@ async def api_scanned_indices(path: str):
         "err_msg": err_msg,
         "indices": scanned
     }
+
+# Helper to parse FITS BINTABLE files without relying on external tablist utility.
+def read_fits_bintable(filepath):
+    import struct
+    import re
+    
+    def read_header(f):
+        header = {}
+        while True:
+            block = f.read(2880)
+            if len(block) < 2880:
+                break
+            end_found = False
+            for i in range(0, 2880, 80):
+                card = block[i:i+80].decode("latin1")
+                keyword = card[:8].strip()
+                if keyword == "END":
+                    end_found = True
+                    break
+                if "=" in card[8:10]:
+                    val_comment = card[10:].split("/", 1)
+                    val = val_comment[0].strip()
+                    if val.startswith("'") and val.endswith("'"):
+                        val = val[1:-1].strip()
+                    header[keyword] = val
+            if end_found:
+                break
+        return header
+
+    try:
+        with open(filepath, "rb") as f:
+            prim_hdr = read_header(f)
+            if not prim_hdr:
+                return []
+            
+            naxis = int(prim_hdr.get("NAXIS", 0))
+            if naxis > 0:
+                bitpix = int(prim_hdr.get("BITPIX", 8))
+                gcount = int(prim_hdr.get("GCOUNT", 1))
+                pcount = int(prim_hdr.get("PCOUNT", 0))
+                num_elements = 1
+                for k in range(1, naxis + 1):
+                    num_elements *= int(prim_hdr.get(f"NAXIS{k}", 0))
+                data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
+                pad_bytes = (2880 - (data_bytes % 2880)) % 2880
+                f.seek(data_bytes + pad_bytes, 1)
+                
+            while True:
+                ext_hdr = read_header(f)
+                if not ext_hdr:
+                    break
+                xtension = ext_hdr.get("XTENSION", "").strip()
+                if xtension in ["BINTABLE", "TABLE"]:
+                    naxis1 = int(ext_hdr.get("NAXIS1", 0))
+                    naxis2 = int(ext_hdr.get("NAXIS2", 0))
+                    tfields = int(ext_hdr.get("TFIELDS", 0))
+                    
+                    columns = []
+                    for i in range(1, tfields + 1):
+                        ttype = ext_hdr.get(f"TTYPE{i}", f"col{i}").strip().lower()
+                        tform = ext_hdr.get(f"TFORM{i}", "").strip()
+                        columns.append((ttype, tform))
+                    
+                    data_size = naxis1 * naxis2
+                    data_block = f.read(data_size)
+                    
+                    pad_bytes = (2880 - (data_size % 2880)) % 2880
+                    f.read(pad_bytes)
+                    
+                    col_structs = []
+                    for ctype, tform in columns:
+                        m = re.match(r'^(\d*)([A-Z])', tform)
+                        if not m:
+                            continue
+                        repeat = int(m.group(1)) if m.group(1) else 1
+                        type_char = m.group(2)
+                                                    
+                        if type_char == 'D':
+                            fmt = f'{repeat}d'
+                            sz = repeat * 8
+                        elif type_char == 'E':
+                            fmt = f'{repeat}f'
+                            sz = repeat * 4
+                        elif type_char == 'J':
+                            fmt = f'{repeat}i'
+                            sz = repeat * 4
+                        elif type_char == 'I':
+                            fmt = f'{repeat}h'
+                            sz = repeat * 2
+                        elif type_char == 'B':
+                            fmt = f'{repeat}B'
+                            sz = repeat * 1
+                        elif type_char == 'A':
+                            fmt = f'{repeat}s'
+                            sz = repeat * 1
+                        elif type_char == 'K':
+                            fmt = f'{repeat}q'
+                            sz = repeat * 8
+                        elif type_char == 'L':
+                            fmt = f'{repeat}?'
+                            sz = repeat * 1
+                        else:
+                            fmt = f'{repeat}s'
+                            sz = repeat * 1
+                        col_structs.append((ctype, fmt, sz, repeat, type_char))
+                        
+                    rows = []
+                    for row_idx in range(naxis2):
+                        row_data = {}
+                        row_bytes = data_block[row_idx * naxis1 : (row_idx + 1) * naxis1]
+                        if len(row_bytes) < naxis1:
+                            break
+                                                    
+                        col_offset = 0
+                        for cname, fmt, sz, repeat, type_char in col_structs:
+                            val_bytes = row_bytes[col_offset : col_offset + sz]
+                            col_offset += sz
+                            if len(val_bytes) < sz:
+                                continue
+                                                            
+                            try:
+                                unpacked = struct.unpack(f'>{fmt}', val_bytes)
+                                if type_char == 'A':
+                                    val = b"".join(unpacked).decode("utf-8", errors="ignore").strip()
+                                else:
+                                    if repeat == 1:
+                                        val = unpacked[0]
+                                    else:
+                                        val = list(unpacked)
+                                row_data[cname] = val
+                            except Exception:
+                                row_data[cname] = None
+                        rows.append(row_data)
+                    return rows
+                else:
+                    naxis1 = int(ext_hdr.get("NAXIS1", 0))
+                    naxis2 = int(ext_hdr.get("NAXIS2", 1))
+                    naxis = int(ext_hdr.get("NAXIS", 0))
+                    bitpix = int(ext_hdr.get("BITPIX", 8))
+                    gcount = int(ext_hdr.get("GCOUNT", 1))
+                    pcount = int(ext_hdr.get("PCOUNT", 0))
+                    num_elements = 1
+                    for k in range(1, naxis + 1):
+                        num_elements *= int(ext_hdr.get(f"NAXIS{k}", 0))
+                    if naxis > 0:
+                        data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
+                        pad_bytes = (2880 - (data_bytes % 2880)) % 2880
+                        f.seek(data_bytes + pad_bytes, 1)
+    except Exception as e:
+        logger.error(f"Error parsing FITS file {filepath}: {e}")
+    return []
+
+_catalog_cache = {}
+
+def get_catalog_rows(filepath):
+    global _catalog_cache
+    if filepath not in _catalog_cache:
+        try:
+            sz = os.path.getsize(filepath)
+            # To avoid memory bloating, only cache files that are under 100MB
+            if sz < 100 * 1024 * 1024:
+                _catalog_cache[filepath] = read_fits_bintable(filepath)
+            else:
+                return read_fits_bintable(filepath)
+        except Exception:
+            return []
+    return _catalog_cache[filepath]
 
 @app.get("/api/planetarium/stars")
 async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str, max_stars: Optional[int] = 1000):
@@ -1595,160 +1772,10 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
     # De-duplicate the FITS query paths list while preserving order
     fits_to_query = list(dict.fromkeys(fits_to_query))
 
-    # Helper to parse FITS BINTABLE files without relying on external tablist utility.
-    def read_fits_bintable(filepath):
-        import struct
-        import re
-        
-        def read_header(f):
-            header = {}
-            while True:
-                block = f.read(2880)
-                if len(block) < 2880:
-                    break
-                end_found = False
-                for i in range(0, 2880, 80):
-                    card = block[i:i+80].decode("latin1")
-                    keyword = card[:8].strip()
-                    if keyword == "END":
-                        end_found = True
-                        break
-                    if "=" in card[8:10]:
-                        val_comment = card[10:].split("/", 1)
-                        val = val_comment[0].strip()
-                        if val.startswith("'") and val.endswith("'"):
-                            val = val[1:-1].strip()
-                        header[keyword] = val
-                if end_found:
-                    break
-            return header
-
-        try:
-            with open(filepath, "rb") as f:
-                prim_hdr = read_header(f)
-                if not prim_hdr:
-                    return []
-                
-                naxis = int(prim_hdr.get("NAXIS", 0))
-                if naxis > 0:
-                    bitpix = int(prim_hdr.get("BITPIX", 8))
-                    gcount = int(prim_hdr.get("GCOUNT", 1))
-                    pcount = int(prim_hdr.get("PCOUNT", 0))
-                    num_elements = 1
-                    for k in range(1, naxis + 1):
-                        num_elements *= int(prim_hdr.get(f"NAXIS{k}", 0))
-                    data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
-                    pad_bytes = (2880 - (data_bytes % 2880)) % 2880
-                    f.seek(data_bytes + pad_bytes, 1)
-                    
-                while True:
-                    ext_hdr = read_header(f)
-                    if not ext_hdr:
-                        break
-                    xtension = ext_hdr.get("XTENSION", "").strip()
-                    if xtension in ["BINTABLE", "TABLE"]:
-                        naxis1 = int(ext_hdr.get("NAXIS1", 0))
-                        naxis2 = int(ext_hdr.get("NAXIS2", 0))
-                        tfields = int(ext_hdr.get("TFIELDS", 0))
-                        
-                        columns = []
-                        for i in range(1, tfields + 1):
-                            ttype = ext_hdr.get(f"TTYPE{i}", f"col{i}").strip().lower()
-                            tform = ext_hdr.get(f"TFORM{i}", "").strip()
-                            columns.append((ttype, tform))
-                        
-                        data_size = naxis1 * naxis2
-                        data_block = f.read(data_size)
-                        
-                        pad_bytes = (2880 - (data_size % 2880)) % 2880
-                        f.read(pad_bytes)
-                        
-                        col_structs = []
-                        for ctype, tform in columns:
-                            m = re.match(r'^(\d*)([A-Z])', tform)
-                            if not m:
-                                continue
-                            repeat = int(m.group(1)) if m.group(1) else 1
-                            type_char = m.group(2)
-                            
-                            if type_char == 'D':
-                                fmt = f'{repeat}d'
-                                sz = repeat * 8
-                            elif type_char == 'E':
-                                fmt = f'{repeat}f'
-                                sz = repeat * 4
-                            elif type_char == 'J':
-                                fmt = f'{repeat}i'
-                                sz = repeat * 4
-                            elif type_char == 'I':
-                                fmt = f'{repeat}h'
-                                sz = repeat * 2
-                            elif type_char == 'B':
-                                fmt = f'{repeat}B'
-                                sz = repeat * 1
-                            elif type_char == 'A':
-                                fmt = f'{repeat}s'
-                                sz = repeat * 1
-                            elif type_char == 'K':
-                                fmt = f'{repeat}q'
-                                sz = repeat * 8
-                            elif type_char == 'L':
-                                fmt = f'{repeat}?'
-                                sz = repeat * 1
-                            else:
-                                fmt = f'{repeat}s'
-                                sz = repeat * 1
-                            col_structs.append((ctype, fmt, sz, repeat, type_char))
-                        
-                        rows = []
-                        for row_idx in range(naxis2):
-                            row_data = {}
-                            row_bytes = data_block[row_idx * naxis1 : (row_idx + 1) * naxis1]
-                            if len(row_bytes) < naxis1:
-                                break
-                            
-                            col_offset = 0
-                            for cname, fmt, sz, repeat, type_char in col_structs:
-                                val_bytes = row_bytes[col_offset : col_offset + sz]
-                                col_offset += sz
-                                if len(val_bytes) < sz:
-                                    continue
-                                
-                                try:
-                                    unpacked = struct.unpack(f'>{fmt}', val_bytes)
-                                    if type_char == 'A':
-                                        val = b"".join(unpacked).decode("utf-8", errors="ignore").strip()
-                                    else:
-                                        if repeat == 1:
-                                            val = unpacked[0]
-                                        else:
-                                            val = list(unpacked)
-                                    row_data[cname] = val
-                                except Exception:
-                                    row_data[cname] = None
-                            rows.append(row_data)
-                        return rows
-                    else:
-                        naxis1 = int(ext_hdr.get("NAXIS1", 0))
-                        naxis2 = int(ext_hdr.get("NAXIS2", 1))
-                        naxis = int(ext_hdr.get("NAXIS", 0))
-                        bitpix = int(ext_hdr.get("BITPIX", 8))
-                        gcount = int(ext_hdr.get("GCOUNT", 1))
-                        pcount = int(ext_hdr.get("PCOUNT", 0))
-                        num_elements = 1
-                        for k in range(1, naxis + 1):
-                            num_elements *= int(ext_hdr.get(f"NAXIS{k}", 0))
-                        if naxis > 0:
-                            data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
-                            pad_bytes = (2880 - (data_bytes % 2880)) % 2880
-                            f.seek(data_bytes + pad_bytes, 1)
-        except Exception as e:
-            logger.error(f"Error parsing FITS file {filepath}: {e}")
-        return []
-
     # 2. Query each identified FITS file
     for fits_filepath in fits_to_query:
         temp_out = os.path.join(temp_dir, f"star_query_{uuid.uuid4().hex}.fits")
+        rows = []
         try:
             # Execute query-starkd
             cmd_starkd = [
@@ -1763,146 +1790,180 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
             
             if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
                 rows = read_fits_bintable(temp_out)
-                for row in rows:
-                    row_lower = {k.lower(): v for k, v in row.items() if v is not None}
-                    
+        except Exception as e:
+            # Fallback: if query-starkd failed (e.g. flat FITS without starkd KD-tree index), read and parse directly
+            logger.info(f"query-starkd failed or file is flat FITS for {fits_filepath}, falling back to direct parsing: {e}")
+            try:
+                all_rows = get_catalog_rows(fits_filepath)
+                import math
+                for r in all_rows:
+                    r_lower = {k.lower(): v for k, v in r.items() if v is not None}
                     s_ra = None
                     s_dec = None
-                    for k, v in row_lower.items():
+                    for k, v in r_lower.items():
                         if k.startswith("ra"):
-                            s_ra = float(v)
+                            try: s_ra = float(v)
+                            except: pass
                         elif k.startswith("dec"):
-                            s_dec = float(v)
-                            
+                            try: s_dec = float(v)
+                            except: pass
                     if s_ra is None or s_dec is None:
                         continue
                         
-                    s_mag = 10.0
-                    for k, v in row_lower.items():
-                        if "mag" in k or k in ["g", "vt", "hp", "phot_g_mean_mag"]:
-                            try:
-                                s_mag = float(v)
-                                break
-                            except Exception:
-                                pass
-                                
-                    star_data = {
-                        "ra": s_ra,
-                        "dec": s_dec,
-                        "mag": s_mag
-                    }
-                    
-                    # Extract catalog identifiers with fallback patterns for naming variations and file name clues
-                    fn_lower = os.path.basename(fits_filepath).lower()
-                    hd_val = None
-                    hip_val = None
-                    tyc_val = None
-                    ucac_val = None
-                    gaia_val = None
-
-                    def clean_catalog_val(val):
-                        if val is None:
-                            return None
-                        if isinstance(val, (list, tuple)):
-                            if len(val) > 0:
-                                val = val[0]
-                            else:
-                                return None
-                        if isinstance(val, bytes):
-                            try:
-                                val = val.decode("utf-8", errors="ignore").strip()
-                            except Exception:
-                                pass
-                        s_val = str(val).strip()
-                        if s_val.endswith(".0"):
-                            s_val = s_val[:-2]
-                        if not s_val or s_val in ["0", "-1", "none", "null"]:
-                            return None
-                        return s_val
-
-                    # Check for Tycho-2 individual parts first (tyc1, tyc2, tyc3)
-                    tyc1 = clean_catalog_val(row_lower.get("tyc1"))
-                    tyc2 = clean_catalog_val(row_lower.get("tyc2"))
-                    tyc3 = clean_catalog_val(row_lower.get("tyc3"))
-                    if tyc1 and tyc2 and tyc3:
-                        tyc_val = f"{tyc1}-{tyc2}-{tyc3}"
-
-                    for rk, rv in row_lower.items():
-                        rv_str = clean_catalog_val(rv)
-                        if not rv_str:
-                            continue
-
-                        # Henry Draper
-                        if "hd" in rk:
-                            hd_val = rv_str
-                        elif rk == "id" and "hd" in fn_lower:
-                            hd_val = rv_str
-
-                        # Hipparcos
-                        elif "hip" in rk:
-                            hip_val = rv_str
-                        elif rk == "id" and "hip" in fn_lower:
-                            hip_val = rv_str
-
-                        # Tycho
-                        elif "tyc" in rk and not tyc_val:
-                            tyc_val = rv_str
-                        elif rk == "id" and ("tycho" in fn_lower or "tyc" in fn_lower):
-                            tyc_val = rv_str
-
-                        # UCAC
-                        elif "ucac" in rk:
-                            ucac_val = rv_str
-                        elif rk == "id" and "ucac" in fn_lower:
-                            ucac_val = rv_str
-
-                        # Gaia
-                        elif "gaia" in rk or rk == "source_id":
-                            gaia_val = rv_str
-                        elif rk == "id" and "gaia" in fn_lower:
-                            gaia_val = rv_str
-
-                    if hd_val: star_data["hd"] = hd_val
-                    if hip_val: star_data["hip"] = hip_val
-                    if tyc_val: star_data["tyc"] = tyc_val
-                    if ucac_val: star_data["ucac"] = ucac_val
-                    if gaia_val: star_data["gaia"] = gaia_val
-                    
-                    # ASTAPのHyperledaを優先して天体名を取得
-                    leda_name = query_hyperleda_cache(s_ra, s_dec, tolerance=0.01, path_or_dir=path)
-                    if leda_name:
-                        star_data["name"] = leda_name
-                    else:
-                        if hd_val:
-                            star_data["name"] = f"HD {hd_val}"
-                        elif hip_val:
-                            star_data["name"] = f"HIP {hip_val}"
-                        elif tyc_val:
-                            star_data["name"] = f"TYC {tyc_val}"
-                                    
-                    stars.append(star_data)
-        except FileNotFoundError:
-            return {
-                "stars": [],
-                "error": "query-starkd utility not found. Please ensure astrometry.net is fully installed on this server."
-            }
-        except Exception as e:
-            logger.error(f"Error querying pixel {pix}: {e}")
+                    ddec = abs(dec - s_dec)
+                    if ddec <= radius:
+                        dra = abs(ra - s_ra) * math.cos(math.radians((dec + s_dec) / 2.0))
+                        if dra <= radius and math.sqrt(dra*dra + ddec*ddec) <= radius:
+                            rows.append(r)
+            except Exception as ex:
+                logger.error(f"Fallback direct parsing failed for {fits_filepath}: {ex}")
         finally:
             if os.path.exists(temp_out):
                 try: os.remove(temp_out)
                 except Exception: pass
+
+        for row in rows:
+            row_lower = {k.lower(): v for k, v in row.items() if v is not None}
+            
+            s_ra = None
+            s_dec = None
+            for k, v in row_lower.items():
+                if k.startswith("ra"):
+                    s_ra = float(v)
+                elif k.startswith("dec"):
+                    s_dec = float(v)
+                    
+            if s_ra is None or s_dec is None:
+                continue
                 
-    # Coordinate-based de-duplication of star query results (within 3.6 arcseconds)
+            s_mag = 10.0
+            for k, v in row_lower.items():
+                if "mag" in k or k in ["g", "vt", "hp", "phot_g_mean_mag"]:
+                    try:
+                        s_mag = float(v)
+                        break
+                    except Exception:
+                        pass
+                        
+            star_data = {
+                "ra": s_ra,
+                "dec": s_dec,
+                "mag": s_mag
+            }
+            
+            # Extract catalog identifiers with fallback patterns for naming variations and file name clues
+            fn_lower = os.path.basename(fits_filepath).lower()
+            hd_val = None
+            hip_val = None
+            tyc_val = None
+            ucac_val = None
+            gaia_val = None
+
+            def clean_catalog_val(val):
+                if val is None:
+                    return None
+                if isinstance(val, (list, tuple)):
+                    if len(val) > 0:
+                        val = val[0]
+                    else:
+                        return None
+                if isinstance(val, bytes):
+                    try:
+                        val = val.decode("utf-8", errors="ignore").strip()
+                    except Exception:
+                        pass
+                s_val = str(val).strip()
+                if s_val.endswith(".0"):
+                    s_val = s_val[:-2]
+                if not s_val or s_val in ["0", "-1", "none", "null"]:
+                    return None
+                return s_val
+
+            # Check for Tycho-2 individual parts first (tyc1, tyc2, tyc3)
+            tyc1 = clean_catalog_val(row_lower.get("tyc1"))
+            tyc2 = clean_catalog_val(row_lower.get("tyc2"))
+            tyc3 = clean_catalog_val(row_lower.get("tyc3"))
+            if tyc1 and tyc2 and tyc3:
+                tyc_val = f"{tyc1}-{tyc2}-{tyc3}"
+
+            for rk, rv in row_lower.items():
+                rv_str = clean_catalog_val(rv)
+                if not rv_str:
+                    continue
+
+                # Henry Draper
+                if "hd" in rk:
+                    hd_val = rv_str
+                elif rk == "id" and "hd" in fn_lower:
+                    hd_val = rv_str
+
+                # Hipparcos
+                elif "hip" in rk:
+                    hip_val = rv_str
+                elif rk == "id" and "hip" in fn_lower:
+                    hip_val = rv_str
+
+                # Tycho
+                elif "tyc" in rk and not tyc_val:
+                    tyc_val = rv_str
+                elif rk == "id" and ("tycho" in fn_lower or "tyc" in fn_lower):
+                    tyc_val = rv_str
+
+                # UCAC
+                elif "ucac" in rk:
+                    ucac_val = rv_str
+                elif rk == "id" and "ucac" in fn_lower:
+                    ucac_val = rv_str
+
+                # Gaia
+                elif "gaia" in rk or rk == "source_id":
+                    gaia_val = rv_str
+                elif rk == "id" and "gaia" in fn_lower:
+                    gaia_val = rv_str
+
+            if hd_val: star_data["hd"] = hd_val
+            if hip_val: star_data["hip"] = hip_val
+            if tyc_val: star_data["tyc"] = tyc_val
+            if ucac_val: star_data["ucac"] = ucac_val
+            if gaia_val: star_data["gaia"] = gaia_val
+            
+            # ASTAPのHyperledaを優先して天体名を取得
+            leda_name = query_hyperleda_cache(s_ra, s_dec, tolerance=0.1, path_or_dir=path)
+            if leda_name:
+                star_data["name"] = leda_name
+            else:
+                if hd_val:
+                    star_data["name"] = f"HD {hd_val}"
+                elif hip_val:
+                    star_data["name"] = f"HIP {hip_val}"
+                elif tyc_val:
+                    star_data["name"] = f"TYC {tyc_val}"
+                            
+            stars.append(star_data)
+
+    # Coordinate-based de-duplication of star query results (within 0.1 degrees)
     import math
+    
+    def get_name_priority(name_str):
+        if not name_str:
+            return 0
+        if name_str.startswith("HD "):
+            return 3
+        if name_str.startswith("HIP "):
+            return 2
+        if name_str.startswith("TYC "):
+            return 1
+        # Hyperleda names have the highest priority
+        return 4
+
     unique_stars = []
     for s in stars:
         is_dup = False
         for us in unique_stars:
             ddec = abs(s["dec"] - us["dec"])
-            if ddec < 0.001:
+            if ddec < 0.1:
                 dra = abs(s["ra"] - us["ra"]) * math.cos(math.radians((s["dec"] + us["dec"]) / 2.0))
-                if dra < 0.001 and math.sqrt(dra*dra + ddec*ddec) < 0.001:
+                if dra < 0.1 and math.sqrt(dra*dra + ddec*ddec) < 0.1:
                     is_dup = True
                     for key in ["hd", "hip", "tyc", "ucac", "gaia"]:
                         if key in s and key not in us:
@@ -1911,12 +1972,10 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                         if "name" not in us:
                             us["name"] = s["name"]
                         else:
-                            us_name = us["name"]
-                            s_name = s["name"]
-                            us_is_catalog = us_name.startswith("HD ") or us_name.startswith("HIP ") or us_name.startswith("TYC ")
-                            s_is_catalog = s_name.startswith("HD ") or s_name.startswith("HIP ") or s_name.startswith("TYC ")
-                            if us_is_catalog and not s_is_catalog:
-                                us["name"] = s_name
+                            us_p = get_name_priority(us.get("name"))
+                            s_p = get_name_priority(s.get("name"))
+                            if s_p > us_p:
+                                us["name"] = s["name"]
                     break
         if not is_dup:
             unique_stars.append(s)
