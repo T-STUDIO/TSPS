@@ -1907,6 +1907,16 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
                     for key in ["hd", "hip", "tyc", "ucac", "gaia"]:
                         if key in s and key not in us:
                             us[key] = s[key]
+                    if "name" in s:
+                        if "name" not in us:
+                            us["name"] = s["name"]
+                        else:
+                            us_name = us["name"]
+                            s_name = s["name"]
+                            us_is_catalog = us_name.startswith("HD ") or us_name.startswith("HIP ") or us_name.startswith("TYC ")
+                            s_is_catalog = s_name.startswith("HD ") or s_name.startswith("HIP ") or s_name.startswith("TYC ")
+                            if us_is_catalog and not s_is_catalog:
+                                us["name"] = s_name
                     break
         if not is_dup:
             unique_stars.append(s)
