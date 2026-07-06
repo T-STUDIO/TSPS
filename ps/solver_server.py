@@ -3406,21 +3406,20 @@ async def solve_api(
     cfg = load_solver_config()
  
     # Load parameters prioritizing TSPS configurations, except for coordinates & search radius (which can be overriden by client)
-    # If the client (like TS-ViewerAIPlus) explicitly sends solver parameters, override them. Otherwise fall back to persistent TSPS config.
-    actual_solver_type = solver_type if solver_type is not None else cfg.get("solver_type", "astrometry")
+    actual_solver_type = cfg.get("solver_type", "astrometry")
     actual_ra = ra
     actual_dec = dec
     actual_radius = radius if radius is not None else cfg.get("radius", 15.0)
     
-    actual_snr = snr if snr is not None else cfg.get("snr", 3)
-    actual_downsample = downsample if downsample is not None else cfg.get("downsample", 2)
-    actual_cpulimit = cpulimit if cpulimit is not None else cfg.get("cpulimit", 120)
-    actual_custom_args = custom_args if custom_args is not None else cfg.get("custom_args", "")
-    actual_use_ai = use_ai if use_ai is not None else cfg.get("use_ai", True)
-    actual_use_sextractor = use_sextractor if use_sextractor is not None else cfg.get("use_sextractor", False)
-    actual_ai_threshold = ai_threshold if ai_threshold is not None else cfg.get("ai_threshold", 180.0)
-    actual_ai_radius = ai_radius if ai_radius is not None else cfg.get("ai_radius", 3.0)
-    actual_ai_min_confidence = ai_min_confidence if ai_min_confidence is not None else cfg.get("ai_min_confidence", 0.3)
+    actual_snr = cfg.get("snr", 3)
+    actual_downsample = cfg.get("downsample", 2)
+    actual_cpulimit = cfg.get("cpulimit", 120)
+    actual_custom_args = cfg.get("custom_args", "")
+    actual_use_ai = cfg.get("use_ai", True)
+    actual_use_sextractor = cfg.get("use_sextractor", False)
+    actual_ai_threshold = cfg.get("ai_threshold", 180.0)
+    actual_ai_radius = cfg.get("ai_radius", 3.0)
+    actual_ai_min_confidence = cfg.get("ai_min_confidence", 0.3)
 
     try:
         with Image.open(img_path) as img_file:
