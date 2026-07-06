@@ -298,6 +298,95 @@ def parse_constants_ts():
         logger.error(f"Error parsing constants.ts: {e}")
     return objects
 
+class SQLiteAstroList:
+    def __init__(self, sqlite_path):
+        self.sqlite_path = sqlite_path
+        self._len = None
+        self._chunk_size = 5000
+        self._chunks = {}  # chunk_index -> list of objects
+        
+    def _load_len(self):
+        if self._len is None:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(self.sqlite_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM celestial_objects")
+                self._len = cursor.fetchone()[0]
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Error getting count from SQLite: {e}")
+                self._len = 0
+        return self._len
+
+    def __len__(self):
+        return self._load_len()
+
+    def _get_chunk(self, chunk_idx):
+        if chunk_idx not in self._chunks:
+            # メモリ上に最大5つのチャンク(計25,000天体)のみを保持し、それを超えると古いキャッシュを破棄してメモリリークを防ぎます。
+            if len(self._chunks) > 5:
+                self._chunks.pop(next(iter(self._chunks)))
+            
+            chunk_data = []
+            try:
+                import sqlite3
+                conn = sqlite3.connect(self.sqlite_path)
+                cursor = conn.cursor()
+                offset = chunk_idx * self._chunk_size
+                cursor.execute("""
+                    SELECT name, ra, dec, mag, type 
+                    FROM celestial_objects 
+                    ORDER BY id ASC
+                    LIMIT ? OFFSET ?
+                """, (self._chunk_size, offset))
+                rows = cursor.fetchall()
+                for r in rows:
+                    chunk_data.append({
+                        "name": r[0],
+                        "ra": r[1],
+                        "dec": r[2],
+                        "mag": r[3],
+                        "type": r[4]
+                    })
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Error loading chunk {chunk_idx} from SQLite: {e}")
+            self._chunks[chunk_idx] = chunk_data
+        return self._chunks[chunk_idx]
+
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            start = idx.start if idx.start is not None else 0
+            stop = idx.stop if idx.stop is not None else len(self)
+            step = idx.step if idx.step is not None else 1
+            res = []
+            for i in range(start, stop, step):
+                res.append(self[i])
+            return res
+            
+        total = len(self)
+        if idx < 0:
+            idx += total
+        if idx < 0 or idx >= total:
+            raise IndexError("Index out of range")
+            
+        chunk_idx = idx // self._chunk_size
+        offset_in_chunk = idx % self._chunk_size
+        chunk = self._get_chunk(chunk_idx)
+        if offset_in_chunk < len(chunk):
+            return chunk[offset_in_chunk]
+        else:
+            raise IndexError("Index out of range in chunk")
+
+    def __iter__(self):
+        total = len(self)
+        num_chunks = (total + self._chunk_size - 1) // self._chunk_size
+        for chunk_idx in range(num_chunks):
+            chunk = self._get_chunk(chunk_idx)
+            for item in chunk:
+                yield item
+
 _cached_db = None
 _db_last_load_time = 0
 
@@ -307,51 +396,61 @@ def load_astro_db():
     if _cached_db is not None and (current_time - _db_last_load_time) < 3600:
         return _cached_db
 
+    astro_db_sqlite_path = "./astro_db.sqlite"
+    if os.path.exists(astro_db_sqlite_path):
+        logger.info("Initializing ultra-low-memory SQLiteAstroList dynamically chunk-by-chunk...")
+        _cached_db = SQLiteAstroList(astro_db_sqlite_path)
+        _db_last_load_time = current_time
+        return _cached_db
+
     local_db = []
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                local_db = json.load(f)
-        except: pass
     
+    # Fallback: Load from standard JSON structure
     if not local_db:
-        local_db = list(MESSIER_DB)
-    
-    # 既存のローカルDBに含まれる天体名を大文字・スペース除外で登録
-    existing_names = {obj["name"].upper().replace(" ", "") for obj in local_db}
-    
-    # constants.ts からのインポート天体を追加
-    constants_objects = parse_constants_ts()
-    if constants_objects:
-        added_count = 0
-        for obj in constants_objects:
-            key = obj["name"].upper().replace(" ", "")
-            if key not in existing_names:
-                local_db.append(obj)
-                existing_names.add(key)
-                added_count += 1
-        if added_count > 0:
-            logger.info(f"Loaded and merged {added_count} celestial objects dynamically from constants.ts into astro_db.json!")
-            
-    # kstars_siril_catalog.txt からのNGC/ICカタログ天体を追加
-    kstars_objects = parse_kstars_catalog()
-    if kstars_objects:
-        added_count = 0
-        for obj in kstars_objects:
-            key = obj["name"].upper().replace(" ", "")
-            if key not in existing_names:
-                local_db.append(obj)
-                existing_names.add(key)
-                added_count += 1
-        if added_count > 0:
-            logger.info(f"Loaded and merged {added_count} celestial objects dynamically from kstars_siril_catalog.txt into astro_db.json!")
-    
-    # 常に最新データで保存
-    try:
-        with open(DB_FILE, "w") as f:
-            json.dump(local_db, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to write to DB_FILE: {e}")
+        if os.path.exists(DB_FILE):
+            try:
+                with open(DB_FILE, "r") as f:
+                    local_db = json.load(f)
+            except: pass
+        
+        if not local_db:
+            local_db = list(MESSIER_DB)
+        
+        # 既存のローカルDBに含まれる天体名を大文字・スペース除外で登録
+        existing_names = {obj["name"].upper().replace(" ", "") for obj in local_db}
+        
+        # constants.ts からのインポート天体を追加
+        constants_objects = parse_constants_ts()
+        if constants_objects:
+            added_count = 0
+            for obj in constants_objects:
+                key = obj["name"].upper().replace(" ", "")
+                if key not in existing_names:
+                    local_db.append(obj)
+                    existing_names.add(key)
+                    added_count += 1
+            if added_count > 0:
+                logger.info(f"Loaded and merged {added_count} celestial objects dynamically from constants.ts into astro_db.json!")
+                
+        # kstars_siril_catalog.txt からのNGC/ICカタログ天体を追加
+        kstars_objects = parse_kstars_catalog()
+        if kstars_objects:
+            added_count = 0
+            for obj in kstars_objects:
+                key = obj["name"].upper().replace(" ", "")
+                if key not in existing_names:
+                    local_db.append(obj)
+                    existing_names.add(key)
+                    added_count += 1
+            if added_count > 0:
+                logger.info(f"Loaded and merged {added_count} celestial objects dynamically from kstars_siril_catalog.txt into astro_db.json!")
+        
+        # 常に最新データで保存
+        try:
+            with open(DB_FILE, "w") as f:
+                json.dump(local_db, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to write to DB_FILE: {e}")
         
     _cached_db = local_db
     _db_last_load_time = current_time
@@ -609,8 +708,51 @@ def parse_wcs_and_annotate(wcs_path, img_w, img_h, custom_db=None, is_astap=Fals
         rotation = math.degrees(math.atan2(wcs['cd1_2'], wcs['cd1_1']))
         radius = (scale * max(actual_w, actual_h) / 3600.0) / 2.0
 
+        # --- SQLiteデータベースを用いた超高速・超広視野近傍天体クエリ ---
+        db_objects = []
+        sqlite_path = "./astro_db.sqlite"
+        if not custom_db and os.path.exists(sqlite_path):
+            try:
+                import sqlite3
+                dec_min = max(-90.0, wcs['crval2'] - radius * 1.5)
+                dec_max = min(90.0, wcs['crval2'] + radius * 1.5)
+                
+                cos_dec = math.cos(math.radians(wcs['crval2']))
+                ra_width = (radius * 1.5) / cos_dec if cos_dec > 0.01 else 360.0
+                ra_min = (wcs['crval1'] - ra_width) % 360.0
+                ra_max = (wcs['crval1'] + ra_width) % 360.0
+                
+                conn = sqlite3.connect(sqlite_path)
+                cursor = conn.cursor()
+                if ra_min <= ra_max:
+                    cursor.execute("""
+                        SELECT name, ra, dec, mag, type FROM celestial_objects
+                        WHERE dec >= ? AND dec <= ? AND ra >= ? AND ra <= ?
+                    """, (dec_min, dec_max, ra_min, ra_max))
+                else:
+                    cursor.execute("""
+                        SELECT name, ra, dec, mag, type FROM celestial_objects
+                        WHERE dec >= ? AND dec <= ? AND (ra >= ? OR ra <= ?)
+                    """, (dec_min, dec_max, ra_min, ra_max))
+                rows = cursor.fetchall()
+                for row in rows:
+                    db_objects.append({
+                        "name": row[0],
+                        "ra": row[1],
+                        "dec": row[2],
+                        "mag": row[3],
+                        "type": row[4]
+                    })
+                conn.close()
+                logger.info(f"WCS Annotation SQL Query: Selected {len(db_objects)} candidate objects in visual FOV (Radius {radius:.2f} deg) via SQLite.")
+            except Exception as ex:
+                logger.warning(f"SQLite WCS coordinate query failed: {ex}")
+                db_objects = db
+        else:
+            db_objects = db
+
         ans = []
-        for obj in db:
+        for obj in db_objects:
             obj_ra = parse_coord_to_degrees(obj.get('ra', 0.0))
             obj_dec = parse_coord_to_degrees(obj.get('dec', 0.0))
             p = wcs_to_pixel_perfect(obj_ra, obj_dec, wcs, actual_w, actual_h)
@@ -1314,137 +1456,6 @@ def download_worker(dir_path, num, url, filename):
                 try: os.remove(target_filepath)
                 except: pass
 
-_hyperleda_cache = None
-
-def load_hyperleda_cache(path_or_dir):
-    global _hyperleda_cache
-    if _hyperleda_cache is not None:
-        return _hyperleda_cache
-    
-    import struct
-    import glob
-    
-    possible_paths = [
-        os.path.join(path_or_dir, "hyperleda.290"),
-        os.path.join(path_or_dir, "hyperleda.bin"),
-        "/opt/astap/hyperleda.290",
-        "/opt/astap/hyperleda.bin",
-        os.path.expanduser("~/astap_downloads/hyperleda.290"),
-        os.path.expanduser("~/astap_downloads/hyperleda.bin")
-    ]
-    
-    hyperleda_path = None
-    for p in possible_paths:
-        if os.path.exists(p):
-            hyperleda_path = p
-            break
-            
-    if not hyperleda_path:
-        for d in [path_or_dir, "/opt/astap", os.path.expanduser("~/astap_downloads")]:
-            if os.path.exists(d):
-                matches = glob.glob(os.path.join(d, "*leda*"))
-                for m in matches:
-                    if os.path.isfile(m) and ("290" in m or "bin" in m or "txt" in m or "leda" in m):
-                        hyperleda_path = m
-                        break
-            if hyperleda_path:
-                break
-                
-    if not hyperleda_path:
-        logger.info("Hyperleda database file not found. Skipping Hyperleda name query.")
-        _hyperleda_cache = []
-        return _hyperleda_cache
-
-    logger.info(f"Loading Hyperleda database from {hyperleda_path}...")
-    cache = []
-    try:
-        if hyperleda_path.endswith(".txt"):
-            with open(hyperleda_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split()
-                    if len(parts) >= 3:
-                        name = parts[0]
-                        try:
-                            l_ra = float(parts[1])
-                            l_dec = float(parts[2])
-                            cache.append((l_ra, l_dec, name))
-                        except ValueError:
-                            pass
-        else:
-            import math
-            file_size = os.path.getsize(hyperleda_path)
-            record_size = 29
-            if file_size % 29 != 0 and file_size % 50 == 0:
-                record_size = 50
-                
-            with open(hyperleda_path, "rb") as f:
-                while True:
-                    data = f.read(record_size)
-                    if len(data) < record_size:
-                        break
-                    try:
-                        ra_val, dec_val = struct.unpack("<ff", data[:8])
-                        # ASTAP binary catalog files (including .290 and .bin) store RA/DEC in radians.
-                        # Convert radians to degrees for querying.
-                        ra_deg = math.degrees(ra_val)
-                        dec_deg = math.degrees(dec_val)
-                        
-                        # Normalize RA to [0, 360] and DEC to [-90, 90]
-                        ra_deg = ra_deg % 360.0
-                        dec_deg = max(-90.0, min(90.0, dec_deg))
-                        
-                        name_bytes = data[10:]
-                        name_str = name_bytes.decode("ascii", errors="ignore").strip("\x00\r\n\t ")
-                        if not name_str:
-                            name_str = data[8:].decode("ascii", errors="ignore").strip("\x00\r\n\t ")
-                        
-                        if name_str:
-                            cache.append((ra_deg, dec_deg, name_str))
-                    except Exception:
-                        pass
-        
-        cache.sort(key=lambda item: item[0])
-        _hyperleda_cache = cache
-        logger.info(f"Loaded {len(cache)} objects from Hyperleda database into memory cache successfully!")
-    except Exception as e:
-        logger.error(f"Error loading Hyperleda database: {e}")
-        _hyperleda_cache = []
-        
-    return _hyperleda_cache
-
-def query_hyperleda_cache(ra, dec, tolerance=0.1, path_or_dir="/opt/astap"):
-    global _hyperleda_cache
-    import bisect
-    import math
-    
-    if _hyperleda_cache is None:
-        load_hyperleda_cache(path_or_dir)
-        
-    if not _hyperleda_cache:
-        return None
-        
-    keys = [item[0] for item in _hyperleda_cache]
-    idx_start = bisect.bisect_left(keys, ra - tolerance)
-    idx_end = bisect.bisect_right(keys, ra + tolerance)
-    
-    best_name = None
-    min_dist = tolerance
-    
-    for i in range(idx_start, idx_end):
-        item_ra, item_dec, item_name = _hyperleda_cache[i]
-        ddec = abs(dec - item_dec)
-        if ddec < min_dist:
-            dra = abs(ra - item_ra) * math.cos(math.radians((dec + item_dec) / 2.0))
-            dist = math.sqrt(dra*dra + ddec*ddec)
-            if dist < min_dist:
-                min_dist = dist
-                best_name = item_name
-                
-    return best_name
-
 @app.get("/api/scanned_indices")
 async def api_scanned_indices(path: str):
     exists = os.path.exists(path)
@@ -1506,173 +1517,6 @@ async def api_scanned_indices(path: str):
         "err_msg": err_msg,
         "indices": scanned
     }
-
-# Helper to parse FITS BINTABLE files without relying on external tablist utility.
-def read_fits_bintable(filepath):
-    import struct
-    import re
-    
-    def read_header(f):
-        header = {}
-        while True:
-            block = f.read(2880)
-            if len(block) < 2880:
-                break
-            end_found = False
-            for i in range(0, 2880, 80):
-                card = block[i:i+80].decode("latin1")
-                keyword = card[:8].strip()
-                if keyword == "END":
-                    end_found = True
-                    break
-                if "=" in card[8:10]:
-                    val_comment = card[10:].split("/", 1)
-                    val = val_comment[0].strip()
-                    if val.startswith("'") and val.endswith("'"):
-                        val = val[1:-1].strip()
-                    header[keyword] = val
-            if end_found:
-                break
-        return header
-
-    try:
-        with open(filepath, "rb") as f:
-            prim_hdr = read_header(f)
-            if not prim_hdr:
-                return []
-            
-            naxis = int(prim_hdr.get("NAXIS", 0))
-            if naxis > 0:
-                bitpix = int(prim_hdr.get("BITPIX", 8))
-                gcount = int(prim_hdr.get("GCOUNT", 1))
-                pcount = int(prim_hdr.get("PCOUNT", 0))
-                num_elements = 1
-                for k in range(1, naxis + 1):
-                    num_elements *= int(prim_hdr.get(f"NAXIS{k}", 0))
-                data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
-                pad_bytes = (2880 - (data_bytes % 2880)) % 2880
-                f.seek(data_bytes + pad_bytes, 1)
-                
-            while True:
-                ext_hdr = read_header(f)
-                if not ext_hdr:
-                    break
-                xtension = ext_hdr.get("XTENSION", "").strip()
-                if xtension in ["BINTABLE", "TABLE"]:
-                    naxis1 = int(ext_hdr.get("NAXIS1", 0))
-                    naxis2 = int(ext_hdr.get("NAXIS2", 0))
-                    tfields = int(ext_hdr.get("TFIELDS", 0))
-                    
-                    columns = []
-                    for i in range(1, tfields + 1):
-                        ttype = ext_hdr.get(f"TTYPE{i}", f"col{i}").strip().lower()
-                        tform = ext_hdr.get(f"TFORM{i}", "").strip()
-                        columns.append((ttype, tform))
-                    
-                    data_size = naxis1 * naxis2
-                    data_block = f.read(data_size)
-                    
-                    pad_bytes = (2880 - (data_size % 2880)) % 2880
-                    f.read(pad_bytes)
-                    
-                    col_structs = []
-                    for ctype, tform in columns:
-                        m = re.match(r'^(\d*)([A-Z])', tform)
-                        if not m:
-                            continue
-                        repeat = int(m.group(1)) if m.group(1) else 1
-                        type_char = m.group(2)
-                                                    
-                        if type_char == 'D':
-                            fmt = f'{repeat}d'
-                            sz = repeat * 8
-                        elif type_char == 'E':
-                            fmt = f'{repeat}f'
-                            sz = repeat * 4
-                        elif type_char == 'J':
-                            fmt = f'{repeat}i'
-                            sz = repeat * 4
-                        elif type_char == 'I':
-                            fmt = f'{repeat}h'
-                            sz = repeat * 2
-                        elif type_char == 'B':
-                            fmt = f'{repeat}B'
-                            sz = repeat * 1
-                        elif type_char == 'A':
-                            fmt = f'{repeat}s'
-                            sz = repeat * 1
-                        elif type_char == 'K':
-                            fmt = f'{repeat}q'
-                            sz = repeat * 8
-                        elif type_char == 'L':
-                            fmt = f'{repeat}?'
-                            sz = repeat * 1
-                        else:
-                            fmt = f'{repeat}s'
-                            sz = repeat * 1
-                        col_structs.append((ctype, fmt, sz, repeat, type_char))
-                        
-                    rows = []
-                    for row_idx in range(naxis2):
-                        row_data = {}
-                        row_bytes = data_block[row_idx * naxis1 : (row_idx + 1) * naxis1]
-                        if len(row_bytes) < naxis1:
-                            break
-                                                    
-                        col_offset = 0
-                        for cname, fmt, sz, repeat, type_char in col_structs:
-                            val_bytes = row_bytes[col_offset : col_offset + sz]
-                            col_offset += sz
-                            if len(val_bytes) < sz:
-                                continue
-                                                            
-                            try:
-                                unpacked = struct.unpack(f'>{fmt}', val_bytes)
-                                if type_char == 'A':
-                                    val = b"".join(unpacked).decode("utf-8", errors="ignore").strip()
-                                else:
-                                    if repeat == 1:
-                                        val = unpacked[0]
-                                    else:
-                                        val = list(unpacked)
-                                row_data[cname] = val
-                            except Exception:
-                                row_data[cname] = None
-                        rows.append(row_data)
-                    return rows
-                else:
-                    naxis1 = int(ext_hdr.get("NAXIS1", 0))
-                    naxis2 = int(ext_hdr.get("NAXIS2", 1))
-                    naxis = int(ext_hdr.get("NAXIS", 0))
-                    bitpix = int(ext_hdr.get("BITPIX", 8))
-                    gcount = int(ext_hdr.get("GCOUNT", 1))
-                    pcount = int(ext_hdr.get("PCOUNT", 0))
-                    num_elements = 1
-                    for k in range(1, naxis + 1):
-                        num_elements *= int(ext_hdr.get(f"NAXIS{k}", 0))
-                    if naxis > 0:
-                        data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
-                        pad_bytes = (2880 - (data_bytes % 2880)) % 2880
-                        f.seek(data_bytes + pad_bytes, 1)
-    except Exception as e:
-        logger.error(f"Error parsing FITS file {filepath}: {e}")
-    return []
-
-_catalog_cache = {}
-
-def get_catalog_rows(filepath):
-    global _catalog_cache
-    if filepath not in _catalog_cache:
-        try:
-            sz = os.path.getsize(filepath)
-            # To avoid memory bloating, only cache files that are under 100MB
-            if sz < 100 * 1024 * 1024:
-                _catalog_cache[filepath] = read_fits_bintable(filepath)
-            else:
-                return read_fits_bintable(filepath)
-        except Exception:
-            return []
-    return _catalog_cache[filepath]
 
 @app.get("/api/planetarium/stars")
 async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str, max_stars: Optional[int] = 1000):
@@ -1772,10 +1616,160 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
     # De-duplicate the FITS query paths list while preserving order
     fits_to_query = list(dict.fromkeys(fits_to_query))
 
+    # Helper to parse FITS BINTABLE files without relying on external tablist utility.
+    def read_fits_bintable(filepath):
+        import struct
+        import re
+        
+        def read_header(f):
+            header = {}
+            while True:
+                block = f.read(2880)
+                if len(block) < 2880:
+                    break
+                end_found = False
+                for i in range(0, 2880, 80):
+                    card = block[i:i+80].decode("latin1")
+                    keyword = card[:8].strip()
+                    if keyword == "END":
+                        end_found = True
+                        break
+                    if "=" in card[8:10]:
+                        val_comment = card[10:].split("/", 1)
+                        val = val_comment[0].strip()
+                        if val.startswith("'") and val.endswith("'"):
+                            val = val[1:-1].strip()
+                        header[keyword] = val
+                if end_found:
+                    break
+            return header
+
+        try:
+            with open(filepath, "rb") as f:
+                prim_hdr = read_header(f)
+                if not prim_hdr:
+                    return []
+                
+                naxis = int(prim_hdr.get("NAXIS", 0))
+                if naxis > 0:
+                    bitpix = int(prim_hdr.get("BITPIX", 8))
+                    gcount = int(prim_hdr.get("GCOUNT", 1))
+                    pcount = int(prim_hdr.get("PCOUNT", 0))
+                    num_elements = 1
+                    for k in range(1, naxis + 1):
+                        num_elements *= int(prim_hdr.get(f"NAXIS{k}", 0))
+                    data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
+                    pad_bytes = (2880 - (data_bytes % 2880)) % 2880
+                    f.seek(data_bytes + pad_bytes, 1)
+                    
+                while True:
+                    ext_hdr = read_header(f)
+                    if not ext_hdr:
+                        break
+                    xtension = ext_hdr.get("XTENSION", "").strip()
+                    if xtension in ["BINTABLE", "TABLE"]:
+                        naxis1 = int(ext_hdr.get("NAXIS1", 0))
+                        naxis2 = int(ext_hdr.get("NAXIS2", 0))
+                        tfields = int(ext_hdr.get("TFIELDS", 0))
+                        
+                        columns = []
+                        for i in range(1, tfields + 1):
+                            ttype = ext_hdr.get(f"TTYPE{i}", f"col{i}").strip().lower()
+                            tform = ext_hdr.get(f"TFORM{i}", "").strip()
+                            columns.append((ttype, tform))
+                        
+                        data_size = naxis1 * naxis2
+                        data_block = f.read(data_size)
+                        
+                        pad_bytes = (2880 - (data_size % 2880)) % 2880
+                        f.read(pad_bytes)
+                        
+                        col_structs = []
+                        for ctype, tform in columns:
+                            m = re.match(r'^(\d*)([A-Z])', tform)
+                            if not m:
+                                continue
+                            repeat = int(m.group(1)) if m.group(1) else 1
+                            type_char = m.group(2)
+                            
+                            if type_char == 'D':
+                                fmt = f'{repeat}d'
+                                sz = repeat * 8
+                            elif type_char == 'E':
+                                fmt = f'{repeat}f'
+                                sz = repeat * 4
+                            elif type_char == 'J':
+                                fmt = f'{repeat}i'
+                                sz = repeat * 4
+                            elif type_char == 'I':
+                                fmt = f'{repeat}h'
+                                sz = repeat * 2
+                            elif type_char == 'B':
+                                fmt = f'{repeat}B'
+                                sz = repeat * 1
+                            elif type_char == 'A':
+                                fmt = f'{repeat}s'
+                                sz = repeat * 1
+                            elif type_char == 'K':
+                                fmt = f'{repeat}q'
+                                sz = repeat * 8
+                            elif type_char == 'L':
+                                fmt = f'{repeat}?'
+                                sz = repeat * 1
+                            else:
+                                fmt = f'{repeat}s'
+                                sz = repeat * 1
+                            col_structs.append((ctype, fmt, sz, repeat, type_char))
+                        
+                        rows = []
+                        for row_idx in range(naxis2):
+                            row_data = {}
+                            row_bytes = data_block[row_idx * naxis1 : (row_idx + 1) * naxis1]
+                            if len(row_bytes) < naxis1:
+                                break
+                            
+                            col_offset = 0
+                            for cname, fmt, sz, repeat, type_char in col_structs:
+                                val_bytes = row_bytes[col_offset : col_offset + sz]
+                                col_offset += sz
+                                if len(val_bytes) < sz:
+                                    continue
+                                
+                                try:
+                                    unpacked = struct.unpack(f'>{fmt}', val_bytes)
+                                    if type_char == 'A':
+                                        val = b"".join(unpacked).decode("utf-8", errors="ignore").strip()
+                                    else:
+                                        if repeat == 1:
+                                            val = unpacked[0]
+                                        else:
+                                            val = list(unpacked)
+                                    row_data[cname] = val
+                                except Exception:
+                                    row_data[cname] = None
+                            rows.append(row_data)
+                        return rows
+                    else:
+                        naxis1 = int(ext_hdr.get("NAXIS1", 0))
+                        naxis2 = int(ext_hdr.get("NAXIS2", 1))
+                        naxis = int(ext_hdr.get("NAXIS", 0))
+                        bitpix = int(ext_hdr.get("BITPIX", 8))
+                        gcount = int(ext_hdr.get("GCOUNT", 1))
+                        pcount = int(ext_hdr.get("PCOUNT", 0))
+                        num_elements = 1
+                        for k in range(1, naxis + 1):
+                            num_elements *= int(ext_hdr.get(f"NAXIS{k}", 0))
+                        if naxis > 0:
+                            data_bytes = abs(bitpix) // 8 * (gcount * (pcount + num_elements))
+                            pad_bytes = (2880 - (data_bytes % 2880)) % 2880
+                            f.seek(data_bytes + pad_bytes, 1)
+        except Exception as e:
+            logger.error(f"Error parsing FITS file {filepath}: {e}")
+        return []
+
     # 2. Query each identified FITS file
     for fits_filepath in fits_to_query:
         temp_out = os.path.join(temp_dir, f"star_query_{uuid.uuid4().hex}.fits")
-        rows = []
         try:
             # Execute query-starkd
             cmd_starkd = [
@@ -1790,192 +1784,138 @@ async def api_planetarium_stars(ra: float, dec: float, radius: float, path: str,
             
             if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
                 rows = read_fits_bintable(temp_out)
-        except Exception as e:
-            # Fallback: if query-starkd failed (e.g. flat FITS without starkd KD-tree index), read and parse directly
-            logger.info(f"query-starkd failed or file is flat FITS for {fits_filepath}, falling back to direct parsing: {e}")
-            try:
-                all_rows = get_catalog_rows(fits_filepath)
-                import math
-                for r in all_rows:
-                    r_lower = {k.lower(): v for k, v in r.items() if v is not None}
+                for row in rows:
+                    row_lower = {k.lower(): v for k, v in row.items() if v is not None}
+                    
                     s_ra = None
                     s_dec = None
-                    for k, v in r_lower.items():
+                    for k, v in row_lower.items():
                         if k.startswith("ra"):
-                            try: s_ra = float(v)
-                            except: pass
+                            s_ra = float(v)
                         elif k.startswith("dec"):
-                            try: s_dec = float(v)
-                            except: pass
+                            s_dec = float(v)
+                            
                     if s_ra is None or s_dec is None:
                         continue
                         
-                    ddec = abs(dec - s_dec)
-                    if ddec <= radius:
-                        dra = abs(ra - s_ra) * math.cos(math.radians((dec + s_dec) / 2.0))
-                        if dra <= radius and math.sqrt(dra*dra + ddec*ddec) <= radius:
-                            rows.append(r)
-            except Exception as ex:
-                logger.error(f"Fallback direct parsing failed for {fits_filepath}: {ex}")
+                    s_mag = 10.0
+                    for k, v in row_lower.items():
+                        if "mag" in k or k in ["g", "vt", "hp", "phot_g_mean_mag"]:
+                            try:
+                                s_mag = float(v)
+                                break
+                            except Exception:
+                                pass
+                                
+                    star_data = {
+                        "ra": s_ra,
+                        "dec": s_dec,
+                        "mag": s_mag
+                    }
+                    
+                    # Extract catalog identifiers with fallback patterns for naming variations and file name clues
+                    fn_lower = os.path.basename(fits_filepath).lower()
+                    hd_val = None
+                    hip_val = None
+                    tyc_val = None
+                    ucac_val = None
+                    gaia_val = None
+
+                    def clean_catalog_val(val):
+                        if val is None:
+                            return None
+                        if isinstance(val, (list, tuple)):
+                            if len(val) > 0:
+                                val = val[0]
+                            else:
+                                return None
+                        if isinstance(val, bytes):
+                            try:
+                                val = val.decode("utf-8", errors="ignore").strip()
+                            except Exception:
+                                pass
+                        s_val = str(val).strip()
+                        if s_val.endswith(".0"):
+                            s_val = s_val[:-2]
+                        if not s_val or s_val in ["0", "-1", "none", "null"]:
+                            return None
+                        return s_val
+
+                    # Check for Tycho-2 individual parts first (tyc1, tyc2, tyc3)
+                    tyc1 = clean_catalog_val(row_lower.get("tyc1"))
+                    tyc2 = clean_catalog_val(row_lower.get("tyc2"))
+                    tyc3 = clean_catalog_val(row_lower.get("tyc3"))
+                    if tyc1 and tyc2 and tyc3:
+                        tyc_val = f"{tyc1}-{tyc2}-{tyc3}"
+
+                    for rk, rv in row_lower.items():
+                        rv_str = clean_catalog_val(rv)
+                        if not rv_str:
+                            continue
+
+                        # Henry Draper
+                        if "hd" in rk:
+                            hd_val = rv_str
+                        elif rk == "id" and "hd" in fn_lower:
+                            hd_val = rv_str
+
+                        # Hipparcos
+                        elif "hip" in rk:
+                            hip_val = rv_str
+                        elif rk == "id" and "hip" in fn_lower:
+                            hip_val = rv_str
+
+                        # Tycho
+                        elif "tyc" in rk and not tyc_val:
+                            tyc_val = rv_str
+                        elif rk == "id" and ("tycho" in fn_lower or "tyc" in fn_lower):
+                            tyc_val = rv_str
+
+                        # UCAC
+                        elif "ucac" in rk:
+                            ucac_val = rv_str
+                        elif rk == "id" and "ucac" in fn_lower:
+                            ucac_val = rv_str
+
+                        # Gaia
+                        elif "gaia" in rk or rk == "source_id":
+                            gaia_val = rv_str
+                        elif rk == "id" and "gaia" in fn_lower:
+                            gaia_val = rv_str
+
+                    if hd_val: star_data["hd"] = hd_val
+                    if hip_val: star_data["hip"] = hip_val
+                    if tyc_val: star_data["tyc"] = tyc_val
+                    if ucac_val: star_data["ucac"] = ucac_val
+                    if gaia_val: star_data["gaia"] = gaia_val
+                                    
+                    stars.append(star_data)
+        except FileNotFoundError:
+            return {
+                "stars": [],
+                "error": "query-starkd utility not found. Please ensure astrometry.net is fully installed on this server."
+            }
+        except Exception as e:
+            logger.error(f"Error querying pixel {pix}: {e}")
         finally:
             if os.path.exists(temp_out):
                 try: os.remove(temp_out)
                 except Exception: pass
-
-        for row in rows:
-            row_lower = {k.lower(): v for k, v in row.items() if v is not None}
-            
-            s_ra = None
-            s_dec = None
-            for k, v in row_lower.items():
-                if k.startswith("ra"):
-                    s_ra = float(v)
-                elif k.startswith("dec"):
-                    s_dec = float(v)
-                    
-            if s_ra is None or s_dec is None:
-                continue
                 
-            s_mag = 10.0
-            for k, v in row_lower.items():
-                if "mag" in k or k in ["g", "vt", "hp", "phot_g_mean_mag"]:
-                    try:
-                        s_mag = float(v)
-                        break
-                    except Exception:
-                        pass
-                        
-            star_data = {
-                "ra": s_ra,
-                "dec": s_dec,
-                "mag": s_mag
-            }
-            
-            # Extract catalog identifiers with fallback patterns for naming variations and file name clues
-            fn_lower = os.path.basename(fits_filepath).lower()
-            hd_val = None
-            hip_val = None
-            tyc_val = None
-            ucac_val = None
-            gaia_val = None
-
-            def clean_catalog_val(val):
-                if val is None:
-                    return None
-                if isinstance(val, (list, tuple)):
-                    if len(val) > 0:
-                        val = val[0]
-                    else:
-                        return None
-                if isinstance(val, bytes):
-                    try:
-                        val = val.decode("utf-8", errors="ignore").strip()
-                    except Exception:
-                        pass
-                s_val = str(val).strip()
-                if s_val.endswith(".0"):
-                    s_val = s_val[:-2]
-                if not s_val or s_val in ["0", "-1", "none", "null"]:
-                    return None
-                return s_val
-
-            # Check for Tycho-2 individual parts first (tyc1, tyc2, tyc3)
-            tyc1 = clean_catalog_val(row_lower.get("tyc1"))
-            tyc2 = clean_catalog_val(row_lower.get("tyc2"))
-            tyc3 = clean_catalog_val(row_lower.get("tyc3"))
-            if tyc1 and tyc2 and tyc3:
-                tyc_val = f"{tyc1}-{tyc2}-{tyc3}"
-
-            for rk, rv in row_lower.items():
-                rv_str = clean_catalog_val(rv)
-                if not rv_str:
-                    continue
-
-                # Henry Draper
-                if "hd" in rk:
-                    hd_val = rv_str
-                elif rk == "id" and "hd" in fn_lower:
-                    hd_val = rv_str
-
-                # Hipparcos
-                elif "hip" in rk:
-                    hip_val = rv_str
-                elif rk == "id" and "hip" in fn_lower:
-                    hip_val = rv_str
-
-                # Tycho
-                elif "tyc" in rk and not tyc_val:
-                    tyc_val = rv_str
-                elif rk == "id" and ("tycho" in fn_lower or "tyc" in fn_lower):
-                    tyc_val = rv_str
-
-                # UCAC
-                elif "ucac" in rk:
-                    ucac_val = rv_str
-                elif rk == "id" and "ucac" in fn_lower:
-                    ucac_val = rv_str
-
-                # Gaia
-                elif "gaia" in rk or rk == "source_id":
-                    gaia_val = rv_str
-                elif rk == "id" and "gaia" in fn_lower:
-                    gaia_val = rv_str
-
-            if hd_val: star_data["hd"] = hd_val
-            if hip_val: star_data["hip"] = hip_val
-            if tyc_val: star_data["tyc"] = tyc_val
-            if ucac_val: star_data["ucac"] = ucac_val
-            if gaia_val: star_data["gaia"] = gaia_val
-            
-            # ASTAPのHyperledaを優先して天体名を取得
-            leda_name = query_hyperleda_cache(s_ra, s_dec, tolerance=0.1, path_or_dir=path)
-            if leda_name:
-                star_data["name"] = leda_name
-            else:
-                if hd_val:
-                    star_data["name"] = f"HD {hd_val}"
-                elif hip_val:
-                    star_data["name"] = f"HIP {hip_val}"
-                elif tyc_val:
-                    star_data["name"] = f"TYC {tyc_val}"
-                            
-            stars.append(star_data)
-
-    # Coordinate-based de-duplication of star query results (within 0.1 degrees)
+    # Coordinate-based de-duplication of star query results (within 3.6 arcseconds)
     import math
-    
-    def get_name_priority(name_str):
-        if not name_str:
-            return 0
-        if name_str.startswith("HD "):
-            return 3
-        if name_str.startswith("HIP "):
-            return 2
-        if name_str.startswith("TYC "):
-            return 1
-        # Hyperleda names have the highest priority
-        return 4
-
     unique_stars = []
     for s in stars:
         is_dup = False
         for us in unique_stars:
             ddec = abs(s["dec"] - us["dec"])
-            if ddec < 0.1:
+            if ddec < 0.001:
                 dra = abs(s["ra"] - us["ra"]) * math.cos(math.radians((s["dec"] + us["dec"]) / 2.0))
-                if dra < 0.1 and math.sqrt(dra*dra + ddec*ddec) < 0.1:
+                if dra < 0.001 and math.sqrt(dra*dra + ddec*ddec) < 0.001:
                     is_dup = True
                     for key in ["hd", "hip", "tyc", "ucac", "gaia"]:
                         if key in s and key not in us:
                             us[key] = s[key]
-                    if "name" in s:
-                        if "name" not in us:
-                            us["name"] = s["name"]
-                        else:
-                            us_p = get_name_priority(us.get("name"))
-                            s_p = get_name_priority(s.get("name"))
-                            if s_p > us_p:
-                                us["name"] = s["name"]
                     break
         if not is_dup:
             unique_stars.append(s)
@@ -2973,7 +2913,9 @@ async def index_manager():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    db_json = json.dumps(load_astro_db())
+    # Frontend queries coordinates dynamically via /api/resolve_name from SQLite,
+    # so we return an empty array to prevent massive JSON payload and browser-tab crashes.
+    db_json = "[]"
     
     html_template = r"""
     <!DOCTYPE html>
@@ -3290,21 +3232,75 @@ async def train_ai_endpoint():
         return {"status": "error", "message": f"Exception occurred during execution: {str(e)}"}
 
 @app.get("/api/resolve_name")
-async def resolve_name(name: str):
-    # まずローカルDBから検索 (constants.tsからマージした最新DSOを含む)
+async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[float] = None):
+    # まずローカル SQLite DB から検索 (大文字スペースなしインデックスを狙う)
     val = name.upper().replace(" ", "")
-    db = load_astro_db()
-    for obj in db:
-        if obj.get("name", "").upper().replace(" ", "") == val:
-            return {
-                "status": "success",
-                "name": obj.get("name"),
-                "ra": obj.get("ra"),
-                "dec": obj.get("dec"),
-                "source": "Local DB"
-            }
+    sqlite_path = "./astro_db.sqlite"
     
-    # 見つからなければオンライン名解決 (Simbad / Sesame)
+    # 恒星やStarといった汎用名の場合は、座標での近傍天体（恒星）検索を優先する
+    is_generic_star = any(x in val for x in ["恒星", "STAR", "BACKGROUND", "INDEXSTAR"])
+    
+    if os.path.exists(sqlite_path):
+        try:
+            import sqlite3
+            conn = sqlite3.connect(sqlite_path)
+            cursor = conn.cursor()
+            row = None
+            
+            # 1. 恒星やStarといった汎用名であり、かつ座標が指定されている場合、近傍検索（約3分角内）を最優先する
+            if ra is not None and dec is not None and is_generic_star:
+                cursor.execute("""
+                    SELECT name, ra, dec, mag, type, source FROM celestial_objects
+                    WHERE ra BETWEEN ? AND ? AND dec BETWEEN ? AND ?
+                    ORDER BY ABS(ra - ?) + ABS(dec - ?) ASC
+                    LIMIT 1
+                """, (ra - 0.05, ra + 0.05, dec - 0.05, dec + 0.05, ra, dec))
+                row = cursor.fetchone()
+                
+            # 2. 汎用名ではない、あるいは汎用名での近傍検索で見つからなかった場合、名前での完全一致検索を試みる
+            if not row:
+                cursor.execute("""
+                    SELECT name, ra, dec, mag, type, source FROM celestial_objects
+                    WHERE REPLACE(UPPER(name), ' ', '') = ?
+                    LIMIT 1
+                """, (val,))
+                row = cursor.fetchone()
+                
+            # 3. 名前完全一致で見つからなかった場合、名前での部分一致（LIKE）検索を試みる
+            if not row:
+                cursor.execute("""
+                    SELECT name, ra, dec, mag, type, source FROM celestial_objects
+                    WHERE REPLACE(UPPER(name), ' ', '') LIKE ?
+                    LIMIT 1
+                """, (f"%{val}%",))
+                row = cursor.fetchone()
+
+            # 4. 名前での部分一致でも見つからず、かつ座標が指定されている場合（汎用名以外）、フォールバックとして近傍検索を試みる
+            if not row and ra is not None and dec is not None and not is_generic_star:
+                cursor.execute("""
+                    SELECT name, ra, dec, mag, type, source FROM celestial_objects
+                    WHERE ra BETWEEN ? AND ? AND dec BETWEEN ? AND ?
+                    ORDER BY ABS(ra - ?) + ABS(dec - ?) ASC
+                    LIMIT 1
+                """, (ra - 0.05, ra + 0.05, dec - 0.05, dec + 0.05, ra, dec))
+                row = cursor.fetchone()
+                
+            if row:
+                conn.close()
+                return {
+                    "status": "success",
+                    "name": row[0],
+                    "ra": row[1],
+                    "dec": row[2],
+                    "mag": row[3],
+                    "type": row[4],
+                    "source": f"Local SQLite ({row[5]})"
+                }
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Failed to query resolve_name in SQLite: {e}")
+            
+    # SQLiteにない、またはエラー時のフォールバックはなく、直接オンライン名解決 (Simbad / Sesame) へ移行
     online_res = resolve_coords_online(name)
     if online_res:
         return {
@@ -3409,20 +3405,22 @@ async def solve_api(
     # Load persistent solver configuration
     cfg = load_solver_config()
  
-    # Determine parameter priorities: Explicit Request > Persistent Server Settings > Historical hardcoded defaults
+    # Load parameters prioritizing TSPS configurations, except for coordinates & search radius (which can be overriden by client)
+    # If the client (like TS-ViewerAIPlus) explicitly sends solver parameters, override them. Otherwise fall back to persistent TSPS config.
     actual_solver_type = solver_type if solver_type is not None else cfg.get("solver_type", "astrometry")
     actual_ra = ra
     actual_dec = dec
-    actual_radius = radius if radius is not None else cfg["radius"]
-    actual_snr = snr if snr is not None else cfg["snr"]
-    actual_downsample = downsample if downsample is not None else cfg["downsample"]
-    actual_cpulimit = cpulimit if cpulimit is not None else cfg["cpulimit"]
-    actual_custom_args = custom_args if custom_args is not None else cfg["custom_args"]
-    actual_use_ai = use_ai if use_ai is not None else cfg["use_ai"]
+    actual_radius = radius if radius is not None else cfg.get("radius", 15.0)
+    
+    actual_snr = snr if snr is not None else cfg.get("snr", 3)
+    actual_downsample = downsample if downsample is not None else cfg.get("downsample", 2)
+    actual_cpulimit = cpulimit if cpulimit is not None else cfg.get("cpulimit", 120)
+    actual_custom_args = custom_args if custom_args is not None else cfg.get("custom_args", "")
+    actual_use_ai = use_ai if use_ai is not None else cfg.get("use_ai", True)
     actual_use_sextractor = use_sextractor if use_sextractor is not None else cfg.get("use_sextractor", False)
-    actual_ai_threshold = ai_threshold if ai_threshold is not None else cfg["ai_threshold"]
-    actual_ai_radius = ai_radius if ai_radius is not None else cfg["ai_radius"]
-    actual_ai_min_confidence = ai_min_confidence if ai_min_confidence is not None else cfg["ai_min_confidence"]
+    actual_ai_threshold = ai_threshold if ai_threshold is not None else cfg.get("ai_threshold", 180.0)
+    actual_ai_radius = ai_radius if ai_radius is not None else cfg.get("ai_radius", 3.0)
+    actual_ai_min_confidence = ai_min_confidence if ai_min_confidence is not None else cfg.get("ai_min_confidence", 0.3)
 
     try:
         with Image.open(img_path) as img_file:

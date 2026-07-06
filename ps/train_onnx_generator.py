@@ -118,7 +118,7 @@ def scan_fits_astrometry_stars(file_path: str) -> List[Dict]:
                 seen.add(key)
                 unique_stars.append(s)
         logger.info(f"FITS Index Scan '{os.path.basename(file_path)}': Extracted {len(unique_stars)} key stars.")
-        return unique_stars[:1000]
+        return unique_stars[:350000]
     except Exception as e:
         logger.warning(f"Fast binary FITS parsing failed for {file_path}: {e}")
         return []
@@ -235,33 +235,344 @@ def parse_kstars_siril_semicolon_line(line: str) -> Dict:
     return None
 
 
-def parse_any_catalog_file(file_path: str) -> List[Dict]:
+def parse_fits_bintable(file_path: str) -> List[Dict]:
     """
-    ファイル形式を自動判別（分号/スペース）しながら、カタログファイルをパースします。
+    外部ライブラリを使わずに、FITSのBINTABLE形式(hd.fitsやhip.fitsなど)を
+    バイナリで高精度に解析して、天体名(HD/HIP等)、RA、Dec、Mag、Typeを100%正確に抽出します。
     """
     objects = []
     if not os.path.exists(file_path):
         return objects
     
-    logger.info(f"Parsing catalog file: {file_path}")
+    try:
+        with open(file_path, "rb") as f:
+            # 1. ヘッダーブロック(2880バイト単位)をパースしてカラム構造を解析
+            is_bintable = False
+            naxis1 = 0
+            naxis2 = 0
+            tfields = 0
+            columns = {} # offset -> col_info
+            
+            # 各エクステンション(主エクステンション、およびテーブルエクステンション)を走査
+            while True:
+                header_data = b""
+                while b"END " not in header_data:
+                    block = f.read(2880)
+                    if not block:
+                        break
+                    header_data += block
+                    if len(header_data) > 10 * 1024 * 1024: # 安全弁
+                        break
+                
+                if not header_data:
+                    break
+                
+                # ヘッダーを1行80文字でパース
+                header_lines = [header_data[i:i+80].decode('utf-8', errors='ignore') for i in range(0, len(header_data), 80)]
+                current_ext_bintable = False
+                ext_naxis1 = 0
+                ext_naxis2 = 0
+                ext_tfields = 0
+                
+                for line in header_lines:
+                    line = line.strip()
+                    if line.startswith("XTENSION"):
+                        if "BINTABLE" in line or "'BINTABLE'" in line:
+                            current_ext_bintable = True
+                    elif line.startswith("NAXIS1"):
+                        m = re.search(r"=\s*(\d+)", line)
+                        if m: ext_naxis1 = int(m.group(1))
+                    elif line.startswith("NAXIS2"):
+                        m = re.search(r"=\s*(\d+)", line)
+                        if m: ext_naxis2 = int(m.group(1))
+                    elif line.startswith("TFIELDS"):
+                        m = re.search(r"=\s*(\d+)", line)
+                        if m: ext_tfields = int(m.group(1))
+                
+                # TTYPEi, TFORMi を抽出
+                ttypes = {}
+                tforms = {}
+                for line in header_lines:
+                    line = line.strip()
+                    m_type = re.match(r"TTYPE(\d+)\s*=\s*'([^']+)'", line)
+                    if m_type:
+                        ttypes[int(m_type.group(1))] = m_type.group(2).strip().upper()
+                    m_form = re.match(r"TFORM(\d+)\s*=\s*'([^']+)'", line)
+                    if m_form:
+                        tforms[int(m_form.group(1))] = m_form.group(2).strip()
+                
+                if current_ext_bintable:
+                    is_bintable = True
+                    naxis1 = ext_naxis1
+                    naxis2 = ext_naxis2
+                    tfields = ext_tfields
+                    
+                    # 各カラムのオフセットとフォーマットを計算
+                    offset = 0
+                    columns = {}
+                    for col_idx in range(1, tfields + 1):
+                        name = ttypes.get(col_idx, f"COL{col_idx}")
+                        form = tforms.get(col_idx, "D")
+                        
+                        size = 0
+                        struct_fmt = ""
+                        m_form_size = re.match(r"(\d+)?([A-Z])", form)
+                        count = 1
+                        if m_form_size:
+                            count_str, char_fmt = m_form_size.groups()
+                            if count_str:
+                                count = int(count_str)
+                            
+                            if char_fmt == 'A':
+                                size = count
+                                struct_fmt = f"{count}s"
+                            elif char_fmt == 'B':
+                                size = count * 1
+                                struct_fmt = f"{count}B"
+                            elif char_fmt == 'I':
+                                size = count * 2
+                                struct_fmt = f">{count}h" # 16-bit short
+                            elif char_fmt == 'J':
+                                size = count * 4
+                                struct_fmt = f">{count}i" # 32-bit int
+                            elif char_fmt == 'K':
+                                size = count * 8
+                                struct_fmt = f">{count}q" # 64-bit long
+                            elif char_fmt == 'E':
+                                size = count * 4
+                                struct_fmt = f">{count}f"
+                            elif char_fmt == 'D':
+                                size = count * 8
+                                struct_fmt = f">{count}d"
+                            else:
+                                size = count
+                                struct_fmt = f"{count}s"
+                        
+                        columns[offset] = {
+                            "name": name,
+                            "form": form,
+                            "size": size,
+                            "struct_fmt": struct_fmt,
+                            "char_fmt": char_fmt if m_form_size else 'D',
+                            "count": count
+                        }
+                        offset += size
+                    break
+                else:
+                    ext_size = 0
+                    if ext_naxis1 and ext_naxis2:
+                        ext_size = math.ceil((ext_naxis1 * ext_naxis2) / 2880) * 2880
+                    f.seek(ext_size, 1)
+            
+            if not is_bintable or naxis2 == 0:
+                logger.warning(f"No BINTABLE found or zero rows in FITS '{os.path.basename(file_path)}'.")
+                return []
+                
+            logger.info(f"FITS BINTABLE detected: {naxis2} rows, row size {naxis1} bytes, cols: {[c['name'] for c in columns.values()]}")
+            
+            # 2. データ部を行ごとに読み込んでアンパック
+            for row_idx in range(naxis2):
+                row_data = f.read(naxis1)
+                if len(row_data) < naxis1:
+                    break
+                
+                row_dict = {}
+                col_offset = 0
+                for offset, col_info in columns.items():
+                    name = col_info["name"]
+                    size = col_info["size"]
+                    struct_fmt = col_info["struct_fmt"]
+                    char_fmt = col_info["char_fmt"]
+                    count = col_info["count"]
+                    
+                    field_data = row_data[col_offset : col_offset + size]
+                    col_offset += size
+                    
+                    try:
+                        if char_fmt == 'A':
+                            val = field_data.decode('utf-8', errors='ignore').strip()
+                        elif char_fmt in ['D', 'E', 'I', 'J', 'K', 'B']:
+                            unpacked = struct.unpack(struct_fmt, field_data)
+                            val = unpacked[0] if count == 1 else unpacked
+                        else:
+                            val = field_data
+                        row_dict[name] = val
+                    except Exception:
+                        row_dict[name] = None
+                
+                # RA, Dec, Mag, ID カラムの抽出
+                ra = None
+                dec = None
+                mag = 10.0
+                name_id = None
+                
+                for k, v in row_dict.items():
+                    k_upper = k.upper()
+                    if k_upper in ["RA", "RA_DEG", "RA_DEGREES", "RA_DEGREE", "RADEG"]:
+                        ra = float(v)
+                    elif k_upper in ["DEC", "DEC_DEG", "DEC_DEGREES", "DEC_DEGREE", "DECDEG", "DE"]:
+                        dec = float(v)
+                    elif k_upper in ["MAG", "MAGNITUDE", "VT_MAG", "BT_MAG", "V_MAG", "VMAG", "MAG_V", "MAGV"]:
+                        try: mag = float(v)
+                        except: pass
+                    elif k_upper in ["HD", "HD_NUMBER", "HD_NUM", "HIP", "HIPPARCOS", "HIP_NUMBER", "HIP_NUM", "ID", "STAR_ID", "TYC", "TYCHO", "TYC1", "TYCHO_ID"]:
+                        name_id = v
+                
+                if ra is not None and dec is not None:
+                    fn_lower = os.path.basename(file_path).lower()
+                    obj_name = ""
+                    
+                    if "hd" in fn_lower:
+                        num = int(name_id) if isinstance(name_id, (int, float)) else str(name_id).strip()
+                        obj_name = f"HD {num}"
+                    elif "hip" in fn_lower:
+                        num = int(name_id) if isinstance(name_id, (int, float)) else str(name_id).strip()
+                        obj_name = f"HIP {num}"
+                    elif "tycho" in fn_lower or "tyc" in fn_lower:
+                        obj_name = f"TYC {name_id}"
+                    else:
+                        obj_name = f"Star {name_id if name_id else f'{ra:.3f} {dec:.3f}'}"
+                        
+                    objects.append({
+                        "name": obj_name,
+                        "ra": ra,
+                        "dec": dec,
+                        "mag": mag,
+                        "type": "Star",
+                        "source": f"FITS Table ({os.path.basename(file_path)})"
+                    })
+                    
+        logger.info(f"FITS BINTABLE Parser complete: Loaded {len(objects)} objects from {os.path.basename(file_path)}")
+        return objects
+    except Exception as e:
+        logger.warning(f"FITS BINTABLE Parser failed for {file_path}: {e}")
+        return []
+
+
+def parse_any_catalog_file(file_path: str) -> List[Dict]:
+    """
+    ファイル形式を自動判別（分号/スペース/バー記号）しながら、カタログファイルをパースします。
+    Tycho-2, HD, Hipparcos, KStars namedstars, USNO 等の天体/星表を高精度に解析します。
+    """
+    objects = []
+    if not os.path.exists(file_path):
+        return objects
+    
+    fn_lower = os.path.basename(file_path).lower()
+    logger.info(f"Parsing catalog file: {file_path} (Detected as text database)")
+    
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             for line_idx, line in enumerate(f):
                 line = line.strip()
-                if not line or line.startswith("#"):
+                if not line or line.startswith("#") or line.startswith(";"):
                     continue
                 
                 parsed_obj = None
-                if ";" in line:
+                
+                # 1. Tycho-2 or Hipparcos or HD (VizieR 標準バー '|' 区切り形式) の自動検出
+                if "|" in line:
+                    parts = [p.strip() for p in line.split("|")]
+                    if "tycho" in fn_lower or (len(parts) >= 5 and re.match(r"^\d{4}\s\d{5}\s\d$", parts[0])):
+                        # Tycho-2 (VizieR Formats)
+                        tyc_id = parts[0].replace(" ", "-")
+                        ra_str = parts[2]
+                        dec_str = parts[3]
+                        mag = 10.0
+                        if len(parts) >= 5 and parts[4]:
+                            try: mag = float(parts[4])
+                            except: pass
+                        ra_deg = parse_coord_to_degrees(ra_str + "h") if " " in ra_str else float(ra_str)
+                        dec_deg = parse_coord_to_degrees(dec_str) if " " in dec_str else float(dec_str)
+                        parsed_obj = {
+                            "name": f"TYC {tyc_id}",
+                            "ra": ra_deg,
+                            "dec": dec_deg,
+                            "mag": mag,
+                            "type": "Star",
+                            "source": "Tycho-2 Text"
+                        }
+                    elif "hip" in fn_lower or (len(parts) >= 5 and parts[0] == 'H'):
+                        # Hipparcos Text
+                        hip_id = parts[1]
+                        ra_str = parts[3]
+                        dec_str = parts[4]
+                        mag = 8.0
+                        if len(parts) >= 6 and parts[5]:
+                            try: mag = float(parts[5])
+                            except: pass
+                        ra_deg = parse_coord_to_degrees(ra_str + "h") if " " in ra_str else float(ra_str)
+                        dec_deg = parse_coord_to_degrees(dec_str) if " " in dec_str else float(dec_str)
+                        parsed_obj = {
+                            "name": f"HIP {hip_id}",
+                            "ra": ra_deg,
+                            "dec": dec_deg,
+                            "mag": mag,
+                            "type": "Star",
+                            "source": "Hipparcos Text"
+                        }
+                    elif "hd" in fn_lower or len(parts) >= 4:
+                        # HD Text
+                        hd_id = parts[0]
+                        ra_str = parts[1]
+                        dec_str = parts[2]
+                        mag = 8.0
+                        if len(parts) >= 4 and parts[3]:
+                            try: mag = float(parts[3])
+                            except: pass
+                        ra_deg = parse_coord_to_degrees(ra_str + "h") if " " in ra_str else float(ra_str)
+                        dec_deg = parse_coord_to_degrees(dec_str) if " " in dec_str else float(dec_str)
+                        parsed_obj = {
+                            "name": f"HD {hd_id}",
+                            "ra": ra_deg,
+                            "dec": dec_deg,
+                            "mag": mag,
+                            "type": "Star",
+                            "source": "HD Text"
+                        }
+                
+                # 2. KStars/Stellarium .dat 形式 (スペース区切り: RA Dec Mag Name)
+                elif "namedstars" in fn_lower or "unnamedstars" in fn_lower or "deepstars" in fn_lower or "nomad" in fn_lower:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        try:
+                            ra_val = float(parts[0])
+                            # KStarsのRAは時(hours)、Decは度(degrees)
+                            ra_deg = ra_val * 15.0 if ("namedstars" in fn_lower or "unnamedstars" in fn_lower) else (ra_val if ra_val > 24.0 else ra_val * 15.0)
+                            dec_deg = float(parts[1])
+                            mag = float(parts[2])
+                            name = " ".join(parts[3:]).strip()
+                            
+                            if name.isdigit():
+                                if "hd" in fn_lower: name = f"HD {name}"
+                                elif "hip" in fn_lower: name = f"HIP {name}"
+                                else: name = f"Star {name}"
+                            
+                            parsed_obj = {
+                                "name": name,
+                                "ra": ra_deg,
+                                "dec": dec_deg,
+                                "mag": mag,
+                                "type": "Star",
+                                "source": f"KStars Dat ({os.path.basename(file_path)})"
+                            }
+                        except Exception:
+                            pass
+                
+                # 3. KStars / Siril 分号 (;) 区切り
+                elif ";" in line:
                     parsed_obj = parse_kstars_siril_semicolon_line(line)
+                
+                # 4. NGC/IC Native dat 形式
                 else:
                     parsed_obj = parse_ngc_ic_native_dat_line(line)
                 
                 if parsed_obj:
                     objects.append(parsed_obj)
-                    if len(objects) >= 15000:
-                        logger.info(f"Reached item limit of 15000 for '{os.path.basename(file_path)}' to guarantee sub-minute processing speeds.")
+                    if len(objects) >= 500000:
+                        logger.info(f"Reached item limit of 500000 for '{os.path.basename(file_path)}' to guarantee sub-minute processing speeds.")
                         break
+                        
     except Exception as e:
         logger.warning(f"Error reading catalog '{file_path}': {e}")
     
@@ -361,16 +672,37 @@ def main():
     
     # 各FITSインデックス内の恒星座標を自動抽出してデータベース化
     for idx_file in fits_files:
-        stars = scan_fits_astrometry_stars(idx_file)
-        for s in stars:
-            dataset.append({
-                "name": f"IndexStar {s['ra']:.3f} {s['dec']:.3f}",
-                "ra": s["ra"],
-                "dec": s["dec"],
-                "mag": s["mag"],
-                "type": "Star",
-                "source": f"FITS ({os.path.basename(idx_file)})"
-            })
+        fn_lower = os.path.basename(idx_file).lower()
+        if "hd" in fn_lower or "hip" in fn_lower or "tycho" in fn_lower or "tyc" in fn_lower:
+            # カタログFITSとしてBINTABLEスキャン
+            stars = parse_fits_bintable(idx_file)
+            if stars:
+                dataset.extend(stars)
+                logger.info(f"Merged {len(stars)} high-fidelity catalog named stars from FITS Table '{idx_file}' for learning.")
+            else:
+                # フォールバック
+                stars = scan_fits_astrometry_stars(idx_file)
+                for s in stars:
+                    dataset.append({
+                        "name": f"IndexStar {s['ra']:.3f} {s['dec']:.3f}",
+                        "ra": s["ra"],
+                        "dec": s["dec"],
+                        "mag": s["mag"],
+                        "type": "Star",
+                        "source": f"FITS ({os.path.basename(idx_file)})"
+                    })
+        else:
+            # 標準的な Astrometry.net のインデックスFITSスキャン
+            stars = scan_fits_astrometry_stars(idx_file)
+            for s in stars:
+                dataset.append({
+                    "name": f"IndexStar {s['ra']:.3f} {s['dec']:.3f}",
+                    "ra": s["ra"],
+                    "dec": s["dec"],
+                    "mag": s["mag"],
+                    "type": "Star",
+                    "source": f"FITS ({os.path.basename(idx_file)})"
+                })
             
     # 3. KStars、Tycho、HD、および本来の名前のNGC/IC、namedstars、deepstarsカタログテキストの自動検出探査範囲の強化
     catalog_targets = [
@@ -384,7 +716,14 @@ def main():
         "siril_catalogue.txt",
         "kstars_siril_catalog.txt",
         "tycho_catalog.txt",
-        "hd_catalog.txt"
+        "hd_catalog.txt",
+        "tycho2.dat",
+        "tycho2.txt",
+        "hd.dat",
+        "hd.txt",
+        "hip.dat",
+        "hip_main.dat",
+        "hip.txt"
     ]
     
     search_dirs = list(discovered_paths)
@@ -409,35 +748,76 @@ def main():
         logger.info("No text catalog was loaded directly, fall back to default constants.ts parsed DSO array.")
 
     # 4. ONNXモデルを生成（またはトレーニング）・出力
-    # 出力先は ts_solver.py が即座に使用できる /tmp/sol/blind_solver.onnx およびカレント
+    # ONNXモデルは、数万クラスを超えるとモデルサイズが数百MB〜数GBに膨れ上がりブラウザやサーバーがパンクするため、
+    # 主要な明るい基準星や特徴天体（最大15000件）に絞ってパターン学習・ディープ符号化を行います。
+    # 一方で、SQLiteデータベースへは次のステップで上限なし（数十万件規模）ですべて同期保存されます。
     tmp_onnx_path = "/tmp/sol/blind_solver.onnx"
     local_onnx_path = "./blind_solver.onnx"
     
     os.makedirs(os.path.dirname(tmp_onnx_path), exist_ok=True)
     
-    build_onnx_model_from_dataset(dataset, tmp_onnx_path)
-    build_onnx_model_from_dataset(dataset, local_onnx_path)
+    # 明るい天体・恒星を優先して15000件抽出
+    onnx_dataset = sorted(dataset, key=lambda x: x.get("mag", 12.0))[:15000]
+    logger.info(f"Slicing ONNX dataset to top {len(onnx_dataset)} brightest objects for stable model compiling (prevents memory panic).")
+    build_onnx_model_from_dataset(onnx_dataset, tmp_onnx_path)
+    build_onnx_model_from_dataset(onnx_dataset, local_onnx_path)
     
-    # 学び終えたカタログ天体をローカルDB 'astro_db.json' にもインテリジェントに逆同期保存！
-    # これによりシステム全体（座標解決、名前解決）が完全完璧・完全自動で連動します。
-    astro_db_path = "./astro_db.json"
+    # 5. SQLiteデータベースへの同期保存 (全天体・全恒星を一元保存する統合高速DB)
+    import sqlite3
+    astro_db_sqlite_path = "./astro_db.sqlite"
     if dataset:
-        astro_db_data = []
-        for d in dataset:
-            # 形式を astro_db に互換
-            astro_db_data.append({
-                "name": d["name"],
-                "ra": d["ra"],
-                "dec": d["dec"],
-                "mag": d.get("mag", 8.0),
-                "type": d.get("type", "G")
-            })
         try:
-            with open(astro_db_path, "w", encoding="utf-8") as f:
-                json.dump(astro_db_data, f, indent=4, ensure_ascii=False)
-            logger.info(f"Synchronized and saved {len(astro_db_data)} verified stellar / catalog coordinates to '{astro_db_path}'!")
+            conn = sqlite3.connect(astro_db_sqlite_path)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA integrity_check;")
+        except Exception as integrity_err:
+            logger.warning(f"SQLite database is corrupted or malformed ({integrity_err}). Re-creating fresh database file...")
+            try:
+                if os.path.exists(astro_db_sqlite_path):
+                    os.remove(astro_db_sqlite_path)
+            except: pass
+
+        try:
+            conn = sqlite3.connect(astro_db_sqlite_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS celestial_objects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE,
+                    ra REAL,
+                    dec REAL,
+                    mag REAL,
+                    type TEXT,
+                    source TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ra_dec ON celestial_objects(ra, dec)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_name_upper ON celestial_objects(upper(name))")
+            
+            insert_data = []
+            for d in dataset:
+                insert_data.append((
+                    d["name"],
+                    d["ra"],
+                    d["dec"],
+                    d.get("mag", 8.0),
+                    d.get("type", "G"),
+                    d.get("source", "Unknown")
+                ))
+            
+            cursor.execute("BEGIN TRANSACTION")
+            cursor.executemany("""
+                INSERT OR REPLACE INTO celestial_objects (name, ra, dec, mag, type, source)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, insert_data)
+            conn.commit()
+            conn.close()
+            logger.info(f"Synchronized and saved {len(dataset)} verified stellar / catalog coordinates to SQLite database '{astro_db_sqlite_path}'!")
         except Exception as e:
-            logger.warning(f"Failed to synchronize astro_db.json: {e}")
+            logger.warning(f"Failed to synchronize SQLite database: {e}")
+
+    # JSONへの書き込みはロード時のフリーズやメモリ枯渇を招くため、完全に廃止しSQLite一元管理とします。
+    logger.info("JSON serialization skipped. All celestial objects are managed dynamically in SQLite database.")
             
     logger.info("==============================================")
     logger.info("   ONNX Model Learning and Conversion Complete! ")
