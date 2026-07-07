@@ -3247,15 +3247,48 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
             cursor = conn.cursor()
             row = None
             
-            # 1. 恒星やStarといった汎用名であり、かつ座標が指定されている場合、近傍検索（約3分角内）を最優先する
+            # 1. 恒星やStarといった汎用名であり、かつ座標が指定されている場合、優先度付き近傍検索（約5分角内）を最優先する
             if ra is not None and dec is not None and is_generic_star:
+                tolerance = 0.08
                 cursor.execute("""
                     SELECT name, ra, dec, mag, type, source FROM celestial_objects
                     WHERE ra BETWEEN ? AND ? AND dec BETWEEN ? AND ?
-                    ORDER BY ABS(ra - ?) + ABS(dec - ?) ASC
-                    LIMIT 1
-                """, (ra - 0.05, ra + 0.05, dec - 0.05, dec + 0.05, ra, dec))
-                row = cursor.fetchone()
+                    LIMIT 30
+                """, (ra - tolerance, ra + tolerance, dec - tolerance, dec + tolerance))
+                candidates = cursor.fetchall()
+                
+                if candidates:
+                    def get_candidate_priority(c):
+                        c_name, c_ra, c_dec, c_mag, c_type, c_src = c
+                        c_src_lower = str(c_src).lower() if c_src else ""
+                        c_name_upper = str(c_name).upper() if c_name else ""
+                        
+                        if not c_name or any(x in c_name_upper for x in ["STAR", "UNNAMED", "恒星", "BACKGROUND", "BG_STAR", "REAL_STAR", "SERVER-STAR"]):
+                            return 10
+                        
+                        is_japanese = any(ord(char) > 127 for char in c_name) if c_name else False
+                        if "kstars" in c_src_lower or "namedstars" in c_src_lower or is_japanese:
+                            return 1
+                        if "tycho" in c_src_lower or c_name_upper.startswith("TYC") or "TYC" in c_name_upper:
+                            return 2
+                        if "hd" in c_src_lower or c_name_upper.startswith("HD") or "HD" in c_name_upper:
+                            return 3
+                        if "hip" in c_src_lower or c_name_upper.startswith("HIP") or "HIP" in c_name_upper:
+                            return 4
+                        return 5
+                    
+                    def sort_key(c):
+                        prio = get_candidate_priority(c)
+                        c_name, c_ra, c_dec, c_mag, c_type, c_src = c
+                        try:
+                            dist = (c_ra - ra)**2 + (c_dec - dec)**2
+                        except:
+                            dist = 999.0
+                        return (prio, dist)
+                    
+                    sorted_candidates = sorted(candidates, key=sort_key)
+                    if sorted_candidates:
+                        row = sorted_candidates[0]
                 
             # 2. 汎用名ではない、あるいは汎用名での近傍検索で見つからなかった場合、名前での完全一致検索を試みる
             if not row:
@@ -3275,15 +3308,48 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
                 """, (f"%{val}%",))
                 row = cursor.fetchone()
 
-            # 4. 名前での部分一致でも見つからず、かつ座標が指定されている場合（汎用名以外）、フォールバックとして近傍検索を試みる
+            # 4. 名前での部分一致でも見つからず、かつ座標が指定されている場合（汎用名以外）、フォールバックとして優先度付き近傍検索を試みる
             if not row and ra is not None and dec is not None and not is_generic_star:
+                tolerance = 0.08
                 cursor.execute("""
                     SELECT name, ra, dec, mag, type, source FROM celestial_objects
                     WHERE ra BETWEEN ? AND ? AND dec BETWEEN ? AND ?
-                    ORDER BY ABS(ra - ?) + ABS(dec - ?) ASC
-                    LIMIT 1
-                """, (ra - 0.05, ra + 0.05, dec - 0.05, dec + 0.05, ra, dec))
-                row = cursor.fetchone()
+                    LIMIT 30
+                """, (ra - tolerance, ra + tolerance, dec - tolerance, dec + tolerance))
+                candidates = cursor.fetchall()
+                
+                if candidates:
+                    def get_candidate_priority(c):
+                        c_name, c_ra, c_dec, c_mag, c_type, c_src = c
+                        c_src_lower = str(c_src).lower() if c_src else ""
+                        c_name_upper = str(c_name).upper() if c_name else ""
+                        
+                        if not c_name or any(x in c_name_upper for x in ["STAR", "UNNAMED", "恒星", "BACKGROUND", "BG_STAR", "REAL_STAR", "SERVER-STAR"]):
+                            return 10
+                        
+                        is_japanese = any(ord(char) > 127 for char in c_name) if c_name else False
+                        if "kstars" in c_src_lower or "namedstars" in c_src_lower or is_japanese:
+                            return 1
+                        if "tycho" in c_src_lower or c_name_upper.startswith("TYC") or "TYC" in c_name_upper:
+                            return 2
+                        if "hd" in c_src_lower or c_name_upper.startswith("HD") or "HD" in c_name_upper:
+                            return 3
+                        if "hip" in c_src_lower or c_name_upper.startswith("HIP") or "HIP" in c_name_upper:
+                            return 4
+                        return 5
+                    
+                    def sort_key(c):
+                        prio = get_candidate_priority(c)
+                        c_name, c_ra, c_dec, c_mag, c_type, c_src = c
+                        try:
+                            dist = (c_ra - ra)**2 + (c_dec - dec)**2
+                        except:
+                            dist = 999.0
+                        return (prio, dist)
+                    
+                    sorted_candidates = sorted(candidates, key=sort_key)
+                    if sorted_candidates:
+                        row = sorted_candidates[0]
                 
             if row:
                 conn.close()
@@ -3300,7 +3366,35 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
         except Exception as e:
             logger.warning(f"Failed to query resolve_name in SQLite: {e}")
             
-    # SQLiteにない、またはエラー時のフォールバックはなく、直接オンライン名解決 (Simbad / Sesame) へ移行
+    # SQLiteで見つからなかった場合のオンライン解決（ハイブリッド解決の第2段階）
+    # 座標がわかっている場合は、まず座標によるオンライン解決 (SIMBAD/Sesame座標検索) を試みる
+    if ra is not None and dec is not None:
+        try:
+            # 座標を時角・度分秒文字列 (Sesame座標検索用) に変換
+            ra_h = int(ra / 15)
+            ra_m = int(((ra / 15) - ra_h) * 60)
+            ra_s = (((ra / 15) - ra_h) * 60 - ra_m) * 60
+            
+            dec_sign = "+" if dec >= 0 else "-"
+            dec_abs = abs(dec)
+            dec_d = int(dec_abs)
+            dec_min = int((dec_abs - dec_d) * 60)
+            dec_sec = ((dec_abs - dec_d) * 60 - dec_min) * 60
+            
+            coord_str = f"{ra_h:02d} {ra_m:02d} {ra_s:05.2f} {dec_sign}{dec_d:02d} {dec_min:02d} {dec_sec:05.2f}"
+            online_res = resolve_coords_online(coord_str)
+            if online_res:
+                return {
+                    "status": "success",
+                    "name": online_res.get("name") or name or coord_str,
+                    "ra": online_res["ra"],
+                    "dec": online_res["dec"],
+                    "source": "SIMBAD (Online Coord)"
+                }
+        except Exception as e:
+            logger.warning(f"Online coordinate resolution failed in backend: {e}")
+
+    # 名前でのオンライン解決
     online_res = resolve_coords_online(name)
     if online_res:
         return {
