@@ -3053,83 +3053,7 @@ async def index():
                 out.innerText = "Saving settings to server...";
                 try {
                     await saveSettings();
-                    out.innerText = "Settings saved successfully to server.\n";
-                } catch(e) {
-                    out.innerText = "Error saving settings: " + e;
-                }
-            }
-            async function saveSettings() {
-                const cfg = {
-                    solver_type: document.getElementById('solver_type').value,
-                    radius: parseFloat(document.getElementById('radius').value),
-                    downsample: parseInt(document.getElementById('downsample').value),
-                    snr: parseInt(document.getElementById('snr').value),
-                    cpulimit: parseInt(document.getElementById('cpulimit').value),
-                    custom_args: document.getElementById('custom_args').value,
-                    use_ai: document.getElementById('use_ai').checked,
-                    use_sextractor: document.getElementById('use_sextractor').checked,
-                    ai_threshold: parseFloat(document.getElementById('ai_threshold').value),
-                    ai_radius: parseFloat(document.getElementById('ai_radius').value)
-                };
-                localStorage.setItem('ts_solver_v3', JSON.stringify(cfg));
-                try {
-                    await fetch('/api/save_config', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(cfg)
-                    });
-                } catch (e) {
-                    console.error("Failed to save solver config to server:", e);
-                }
-            }
-            async function loadSettings() {
-                let solver_type = 'astrometry', radius = 15, downsample = 2, snr = 3, cpulimit = 120;
-                let custom_args = "--scale-units degwidth --scale-low 1 --scale-high 10 --guess-scale --no-plots --no-verify --no-remove-lines --uniformize";
-                let use_ai = true, use_sextractor = true, ai_threshold = 180.0, ai_radius = 3.0;
-
-                try {
-                    const r = await fetch('/api/get_config');
-                    const s = await r.json();
-                    solver_type = s.solver_type ?? solver_type;
-                    radius = s.radius ?? radius;
-                    downsample = s.downsample ?? downsample;
-                    snr = s.snr ?? snr;
-                    cpulimit = s.cpulimit ?? cpulimit;
-                    custom_args = s.custom_args ?? custom_args;
-                    use_ai = s.use_ai ?? use_ai;
-                    use_sextractor = s.use_sextractor ?? use_sextractor;
-                    ai_threshold = s.ai_threshold ?? ai_threshold;
-                    ai_radius = s.ai_radius ?? ai_radius;
-                } catch (e) {
-                    console.warn("Failed to load config from server, using localStorage fallback:", e);
-                    const saved = localStorage.getItem('ts_solver_v3');
-                    if (saved) {
-                        const s = JSON.parse(saved);
-                        solver_type = s.solver_type ?? solver_type;
-                        radius = s.radius ?? radius;
-                        downsample = s.downsample ?? downsample;
-                        snr = s.snr ?? snr;
-                        cpulimit = s.cpulimit ?? cpulimit;
-                        custom_args = s.custom_args ?? custom_args;
-                        use_ai = s.use_ai ?? use_ai;
-                        use_sextractor = s.use_sextractor ?? use_sextractor;
-                        ai_threshold = s.ai_threshold ?? ai_threshold;
-                        ai_radius = s.ai_radius ?? ai_radius;
-                    }
-                }
-
-                document.getElementById('solver_type').value = solver_type;
-                document.getElementById('radius').value = radius;
-                document.getElementById('downsample').value = downsample;
-                document.getElementById('snr').value = snr;
-                document.getElementById('cpulimit').value = cpulimit;
-                document.getElementById('custom_args').value = custom_args;
-                document.getElementById('use_ai').checked = use_ai;
-                document.getElementById('use_sextractor').checked = use_sextractor;
-                document.getElementById('ai_threshold').value = ai_threshold;
-                document.getElementById('ai_radius').value = ai_radius;
-            }
-            async function runSolve(){
+                    out.innerText            async function runSolve(){
                 await saveSettings();
                 const out = document.getElementById('out');
                 out.innerText = "Analyzing...";
@@ -3232,13 +3156,9 @@ async def train_ai_endpoint():
         return {"status": "error", "message": f"Exception occurred during execution: {str(e)}"}
 
 @app.get("/api/resolve_name")
-async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[float] = None):
+async def resolve_name(name: Optional[str] = None, ra: Optional[float] = None, dec: Optional[float] = None):
     # まずローカル SQLite DB から検索 (大文字スペースなしインデックスを狙う)
-    val = name.upper().replace(" ", "")
     sqlite_path = "./astro_db.sqlite"
-    
-    # 恒星やStarといった汎用名の場合は、座標での近傍天体（恒星）検索を優先する
-    is_generic_star = any(x in val for x in ["恒星", "STAR", "BACKGROUND", "INDEXSTAR"])
     
     if os.path.exists(sqlite_path):
         try:
@@ -3247,13 +3167,14 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
             cursor = conn.cursor()
             row = None
             
-            # 1. 恒星やStarといった汎用名であり、かつ座標が指定されている場合、優先度付き近傍検索（約5分角内）を最優先する
-            if ra is not None and dec is not None and is_generic_star:
-                tolerance = 0.08
+            # 1. 座標が指定されている場合、座標に基づく近傍検索（tolerance内）を最優先にする。
+            # 名前が generic であるかどうかに関わらず、クリックされたピンポイント座標の近くにある既知の天体情報を最優先で特定する。
+            if ra is not None and dec is not None:
+                tolerance = 0.1
                 cursor.execute("""
                     SELECT name, ra, dec, mag, type, source FROM celestial_objects
                     WHERE ra BETWEEN ? AND ? AND dec BETWEEN ? AND ?
-                    LIMIT 30
+                    LIMIT 50
                 """, (ra - tolerance, ra + tolerance, dec - tolerance, dec + tolerance))
                 candidates = cursor.fetchall()
                 
@@ -3263,7 +3184,7 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
                         c_src_lower = str(c_src).lower() if c_src else ""
                         c_name_upper = str(c_name).upper() if c_name else ""
                         
-                        if not c_name or any(x in c_name_upper for x in ["STAR", "UNNAMED", "恒星", "BACKGROUND", "BG_STAR", "REAL_STAR", "SERVER-STAR"]):
+                        if not c_name or any(x in c_name_upper for x in ["STAR", "UNNAMED", "恒星", "BACKGROUND", "BG_STAR", "REAL_STAR", "SERVER-STAR", "INDEXSTAR"]):
                             return 10
                         
                         is_japanese = any(ord(char) > 127 for char in c_name) if c_name else False
@@ -3290,8 +3211,9 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
                     if sorted_candidates:
                         row = sorted_candidates[0]
                 
-            # 2. 汎用名ではない、あるいは汎用名での近傍検索で見つからなかった場合、名前での完全一致検索を試みる
-            if not row:
+            # 2. 座標で見つからなかった、あるいは座標が指定されていない場合、かつ名前が指定されている場合、名前完全一致検索
+            if not row and name:
+                val = name.upper().replace(" ", "")
                 cursor.execute("""
                     SELECT name, ra, dec, mag, type, source FROM celestial_objects
                     WHERE REPLACE(UPPER(name), ' ', '') = ?
@@ -3299,58 +3221,18 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
                 """, (val,))
                 row = cursor.fetchone()
                 
-            # 3. 名前完全一致で見つからなかった場合、名前での部分一致（LIKE）検索を試みる
-            if not row and not is_generic_star:
-                cursor.execute("""
-                    SELECT name, ra, dec, mag, type, source FROM celestial_objects
-                    WHERE REPLACE(UPPER(name), ' ', '') LIKE ?
-                    LIMIT 1
-                """, (f"%{val}%",))
-                row = cursor.fetchone()
-
-            # 4. 名前での部分一致でも見つからず、かつ座標が指定されている場合（汎用名以外）、フォールバックとして優先度付き近傍検索を試みる
-            if not row and ra is not None and dec is not None and not is_generic_star:
-                tolerance = 0.08
-                cursor.execute("""
-                    SELECT name, ra, dec, mag, type, source FROM celestial_objects
-                    WHERE ra BETWEEN ? AND ? AND dec BETWEEN ? AND ?
-                    LIMIT 30
-                """, (ra - tolerance, ra + tolerance, dec - tolerance, dec + tolerance))
-                candidates = cursor.fetchall()
-                
-                if candidates:
-                    def get_candidate_priority(c):
-                        c_name, c_ra, c_dec, c_mag, c_type, c_src = c
-                        c_src_lower = str(c_src).lower() if c_src else ""
-                        c_name_upper = str(c_name).upper() if c_name else ""
-                        
-                        if not c_name or any(x in c_name_upper for x in ["STAR", "UNNAMED", "恒星", "BACKGROUND", "BG_STAR", "REAL_STAR", "SERVER-STAR"]):
-                            return 10
-                        
-                        is_japanese = any(ord(char) > 127 for char in c_name) if c_name else False
-                        if "kstars" in c_src_lower or "namedstars" in c_src_lower or is_japanese:
-                            return 1
-                        if "tycho" in c_src_lower or c_name_upper.startswith("TYC") or "TYC" in c_name_upper:
-                            return 2
-                        if "hd" in c_src_lower or c_name_upper.startswith("HD") or "HD" in c_name_upper:
-                            return 3
-                        if "hip" in c_src_lower or c_name_upper.startswith("HIP") or "HIP" in c_name_upper:
-                            return 4
-                        return 5
-                    
-                    def sort_key(c):
-                        prio = get_candidate_priority(c)
-                        c_name, c_ra, c_dec, c_mag, c_type, c_src = c
-                        try:
-                            dist = (c_ra - ra)**2 + (c_dec - dec)**2
-                        except:
-                            dist = 999.0
-                        return (prio, dist)
-                    
-                    sorted_candidates = sorted(candidates, key=sort_key)
-                    if sorted_candidates:
-                        row = sorted_candidates[0]
-                
+            # 3. 名前完全一致で見つからなかった場合、かつ名前が指定されており汎用名ではない場合、名前での部分一致（LIKE）検索を試みる
+            if not row and name:
+                val = name.upper().replace(" ", "")
+                is_generic_star = any(x in val for x in ["恒星", "STAR", "BACKGROUND", "INDEXSTAR"])
+                if not is_generic_star:
+                    cursor.execute("""
+                        SELECT name, ra, dec, mag, type, source FROM celestial_objects
+                        WHERE REPLACE(UPPER(name), ' ', '') LIKE ?
+                        LIMIT 1
+                    """, (f"%{val}%",))
+                    row = cursor.fetchone()
+ 
             if row:
                 conn.close()
                 return {
