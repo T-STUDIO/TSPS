@@ -3300,7 +3300,7 @@ async def resolve_name(name: str, ra: Optional[float] = None, dec: Optional[floa
                 row = cursor.fetchone()
                 
             # 3. 名前完全一致で見つからなかった場合、名前での部分一致（LIKE）検索を試みる
-            if not row:
+            if not row and not is_generic_star:
                 cursor.execute("""
                     SELECT name, ra, dec, mag, type, source FROM celestial_objects
                     WHERE REPLACE(UPPER(name), ' ', '') LIKE ?
