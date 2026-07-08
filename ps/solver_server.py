@@ -3189,7 +3189,7 @@ async def train_ai_endpoint():
         return {"status": "failed", "message": "Training script train_onnx_generator.py not found."}
         
     try:
-        p = subprocess.run(["python3", train_script], capture_output=True, text=True, timeout=120)
+        p = subprocess.run(["python3", train_script], capture_output=True, text=True, timeout=1200)
         if p.returncode == 0:
             return {
                 "status": "success",
