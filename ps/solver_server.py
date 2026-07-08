@@ -3048,12 +3048,63 @@ async def index():
                     out.innerText = "Error resolving: " + e;
                 }
             }
+            async function loadSettings() {
+                const out = document.getElementById('out');
+                try {
+                    const resp = await fetch('/api/get_config');
+                    const settings = await resp.json();
+                    if (settings) {
+                        if (settings.solver_type) document.getElementById('solver_type').value = settings.solver_type;
+                        if (settings.downsample) document.getElementById('downsample').value = settings.downsample;
+                        if (settings.snr) document.getElementById('snr').value = settings.snr;
+                        if (settings.cpulimit) document.getElementById('cpulimit').value = settings.cpulimit;
+                        if (settings.use_sextractor !== undefined) document.getElementById('use_sextractor').checked = settings.use_sextractor;
+                        if (settings.custom_args) document.getElementById('custom_args').value = settings.custom_args;
+                        if (settings.use_ai !== undefined) document.getElementById('use_ai').checked = settings.use_ai;
+                        if (settings.ai_threshold) document.getElementById('ai_threshold').value = settings.ai_threshold;
+                        if (settings.ai_radius) document.getElementById('ai_radius').value = settings.ai_radius;
+                    }
+                } catch (e) {
+                    console.error("Failed to load settings:", e);
+                    out.innerText = "Error loading settings from server: " + e;
+                }
+            }
+
+            async function saveSettings() {
+                const settings = {
+                    solver_type: document.getElementById('solver_type').value,
+                    downsample: Number(document.getElementById('downsample').value),
+                    snr: Number(document.getElementById('snr').value),
+                    cpulimit: Number(document.getElementById('cpulimit').value),
+                    use_sextractor: document.getElementById('use_sextractor').checked,
+                    custom_args: document.getElementById('custom_args').value,
+                    use_ai: document.getElementById('use_ai').checked,
+                    ai_threshold: Number(document.getElementById('ai_threshold').value),
+                    ai_radius: Number(document.getElementById('ai_radius').value),
+                };
+                const resp = await fetch('/api/save_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+                const res = await resp.json();
+                if (res.status !== 'success') {
+                    throw new Error(res.message || "Failed to save settings to server");
+                }
+            }
+
             async function triggerSaveSettings() {
                 const out = document.getElementById('out');
                 out.innerText = "Saving settings to server...";
                 try {
                     await saveSettings();
-                    out.innerText            async function runSolve(){
+                    out.innerText = "Settings saved successfully to server!";
+                } catch(e) {
+                    out.innerText = "Error saving settings: " + e;
+                }
+            }
+
+            async function runSolve(){
                 await saveSettings();
                 const out = document.getElementById('out');
                 out.innerText = "Analyzing...";
@@ -3170,11 +3221,11 @@ async def resolve_name(name: Optional[str] = None, ra: Optional[float] = None, d
             # 1. 座標が指定されている場合、座標に基づく近傍検索（tolerance内）を最優先にする。
             # 名前が generic であるかどうかに関わらず、クリックされたピンポイント座標の近くにある既知の天体情報を最優先で特定する。
             if ra is not None and dec is not None:
-                tolerance = 0.1
+                tolerance = 1.5
                 cursor.execute("""
                     SELECT name, ra, dec, mag, type, source FROM celestial_objects
                     WHERE ra BETWEEN ? AND ? AND dec BETWEEN ? AND ?
-                    LIMIT 50
+                    LIMIT 100
                 """, (ra - tolerance, ra + tolerance, dec - tolerance, dec + tolerance))
                 candidates = cursor.fetchall()
                 
